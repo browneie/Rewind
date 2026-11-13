@@ -97,6 +97,9 @@ sealed record Hotkey(uint Vk, uint Modifiers, string Display)
 {
     public const uint Alt = 0x1, Ctrl = 0x2, Shift = 0x4, Win = 0x8;
 
+    public static readonly Hotkey None = new(0, 0, "No bind set");
+    [JsonIgnore] public bool IsSet => Vk != 0;
+
     public static string ModifierText(uint m)
     {
         var s = new StringBuilder();
@@ -201,6 +204,9 @@ sealed class Settings : INotifyPropertyChanged
         public int ReplaySeconds { get; set; } = 120;
         public bool StartReplayOnLaunch { get; set; } = true;
         public bool ShareRewindWindows { get; set; } = true;
+        public bool AutoCleanup { get; set; }
+        public int CleanupDays { get; set; } = 14;
+        public List<string> AppPrefixes { get; set; } = new();
         public string? OutputDirectory { get; set; }
         public Dictionary<string, Hotkey> Hotkeys { get; set; } = new();
     }
@@ -234,6 +240,8 @@ sealed class Settings : INotifyPropertyChanged
         x.Fps = x.Fps <= 0 ? 60 : Math.Clamp(x.Fps, MinFps, MaxFps);
         if (x.ReplaySeconds is < 5 or > 3600) x.ReplaySeconds = 120;
         x.Hotkeys ??= new();
+        x.AppPrefixes ??= new();
+        x.CleanupDays = Math.Max(1, x.CleanupDays);
         x.DisplayId ??= "";
         x.CaptureAppId ??= "";
         x.CaptureAppName ??= "";
@@ -277,6 +285,26 @@ sealed class Settings : INotifyPropertyChanged
     public int ReplaySeconds { get => d.ReplaySeconds; set => Set(d.ReplaySeconds, value, v => d.ReplaySeconds = v); }
     public bool StartReplayOnLaunch { get => d.StartReplayOnLaunch; set => Set(d.StartReplayOnLaunch, value, v => d.StartReplayOnLaunch = v); }
     public bool ShareRewindWindows { get => d.ShareRewindWindows; set => Set(d.ShareRewindWindows, value, v => d.ShareRewindWindows = v); }
+    public bool AutoCleanup { get => d.AutoCleanup; set => Set(d.AutoCleanup, value, v => d.AutoCleanup = v); }
+    public int CleanupDays { get => d.CleanupDays; set => Set(d.CleanupDays, Math.Max(1, value), v => d.CleanupDays = v); }
+    /// App names used to name clips ("Roblox"), so cleanup and Recent clips still recognise those files.
+    public IReadOnlyList<string> AppPrefixes => d.AppPrefixes;
+
+    /// File name prefix for clips of an app: its name as the app spells it, made safe for a file name.
+    public string? ClipPrefix(string appName)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var cleaned = new string(appName.Select(ch => invalid.Contains(ch) ? '-' : ch).ToArray()).Trim().Trim('.').Trim();
+        string[] reserved = { "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "LPT1", "LPT2", "LPT3" };
+        if (cleaned.Length == 0 || reserved.Contains(cleaned, StringComparer.OrdinalIgnoreCase) ||
+            Cleanup.BuiltInPrefixes.Contains(cleaned, StringComparer.OrdinalIgnoreCase)) return null;
+        if (!d.AppPrefixes.Contains(cleaned))
+        {
+            d.AppPrefixes.Add(cleaned);
+            Save();
+        }
+        return cleaned;
+    }
 
     public string OutputDirectory
     {
@@ -302,6 +330,15 @@ sealed class Settings : INotifyPropertyChanged
         Save();
         HotkeysChanged?.Invoke();
         Changed?.Invoke();
+    }
+
+    public void ClearHotkey(HotkeyAction a) => SetHotkey(Rewind.Hotkey.None, a);
+
+    /// "Alt+F10 to save", or "" when that action has no shortcut.
+    public string HotkeyHint(HotkeyAction a, string what)
+    {
+        var h = Hotkey(a);
+        return h.IsSet ? $"{h.Display} {what}" : "";
     }
 
     public CaptureSignature CaptureSignature => new(
@@ -376,7 +413,7 @@ static class AppTarget
             if (r.Width <= 50 || r.Height <= 50) return true;
             if (!paths.TryGetValue(pid, out var path)) paths[pid] = path = Native.ProcessPath(pid);
             if (path == null) return true;
-            list.Add(new AppWindow(hwnd, pid, Key(path), DisplayName(path), path, r));
+            list.Add(new AppWindow(hwnd, pid, Key(path), DisplayName(path, Native.WindowTitle(hwnd)), path, r));
             return true;
         }, IntPtr.Zero);
         return list;
@@ -396,8 +433,14 @@ static class AppTarget
 
     static readonly Dictionary<string, string> NameCache = new(StringComparer.OrdinalIgnoreCase);
 
-    public static string DisplayName(string exePath)
+    // Games that run inside a runtime (Minecraft in javaw.exe) would all be called "Java(TM) Platform SE binary",
+    // so those are named from their window title instead: "Lunar Client 1.8.9 (v3)" → "Lunar Client".
+    static readonly HashSet<string> RuntimeHosts = new(StringComparer.OrdinalIgnoreCase)
+        { "java.exe", "javaw.exe", "python.exe", "pythonw.exe", "node.exe", "electron.exe" };
+
+    public static string DisplayName(string exePath, string? windowTitle = null)
     {
+        if (RuntimeHosts.Contains(Path.GetFileName(exePath)) && TitleName(windowTitle) is { } fromTitle) return fromTitle;
         lock (NameCache)
         {
             if (NameCache.TryGetValue(exePath, out var cached)) return cached;
@@ -411,5 +454,15 @@ static class AppTarget
             NameCache[exePath] = name;
             return name;
         }
+    }
+
+    static string? TitleName(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return null;
+        int cut = title.IndexOfAny(new[] { '(', '[', '|', '-', '—' });
+        var name = cut > 0 ? title[..cut] : title;
+        var words = name.Split(' ', StringSplitOptions.RemoveEmptyEntries).TakeWhile(w => !char.IsDigit(w[0])).ToArray();
+        var result = string.Join(' ', words).Trim('*', ' ', ':');
+        return result.Length > 0 ? result : null;
     }
 }

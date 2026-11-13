@@ -29,7 +29,7 @@ sealed class Mp4Muxer : IDisposable
     readonly string path;
     readonly bool fastStart;
     readonly FileStream? fs;
-    readonly List<byte[]> planned = new();
+    readonly List<Func<byte[]>> planned = new();
     readonly List<Track> tracks = new();
     readonly long mdatStart;
     readonly byte[] ftyp;
@@ -58,9 +58,13 @@ sealed class Mp4Muxer : IDisposable
         return hdr;
     }
 
-    public int AddVideo(CodecConfig cfg)
+    public int AddVideo(CodecConfig cfg, long editMediaTime = 0)
     {
-        var t = new Track { Id = tracks.Count + 1, IsVideo = true, Timescale = VideoTimescale, Video = cfg, LastDuration = VideoTimescale / Math.Max(cfg.Fps, 1) };
+        var t = new Track
+        {
+            Id = tracks.Count + 1, IsVideo = true, Timescale = VideoTimescale, Video = cfg,
+            LastDuration = VideoTimescale / Math.Max(cfg.Fps, 1), EditMediaTime = editMediaTime,
+        };
         tracks.Add(t);
         return tracks.Count - 1;
     }
@@ -79,15 +83,28 @@ sealed class Mp4Muxer : IDisposable
 
     public void Write(int track, byte[] data, long dts, bool sync)
     {
+        if (fastStart) { Write(track, data.Length, dts, sync, () => data); return; }
+        AddSample(track, data.Length, dts, sync);
+        fs!.Write(data);
+        position += data.Length;
+    }
+
+    /// Clips only: a sample whose bytes are read when the file is written (e.g. from the clip being trimmed).
+    public void Write(int track, int size, long dts, bool sync, Func<byte[]> load)
+    {
+        AddSample(track, size, dts, sync);
+        planned.Add(load);
+        position += size;
+    }
+
+    void AddSample(int track, int size, long dts, bool sync)
+    {
         var t = tracks[track];
         if (t.Dts.Count > 0 && dts <= t.Dts[^1]) dts = t.Dts[^1] + 1;
         t.Offsets.Add(position);
-        t.Sizes.Add(data.Length);
+        t.Sizes.Add(size);
         t.Dts.Add(dts);
         if (sync) t.Sync.Add(t.Dts.Count);
-        if (fastStart) planned.Add(data);
-        else fs!.Write(data);
-        position += data.Length;
     }
 
     public int SampleCount(int track) => tracks[track].Dts.Count;
@@ -124,7 +141,7 @@ sealed class Mp4Muxer : IDisposable
                 outFs.Write(ftyp);
                 outFs.Write(moov);
                 outFs.Write(MdatHeaderBytes(mdatSize));
-                foreach (var d in planned) outFs.Write(d);
+                foreach (var load in planned) outFs.Write(load());
             }
             File.Move(part, path, overwrite: true);
         }

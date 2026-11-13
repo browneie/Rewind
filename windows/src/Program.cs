@@ -44,12 +44,25 @@ static class Program
             try { return DevTools.ProbeCapture(); }
             catch (Exception e) { Console.WriteLine($"FAIL: {e}"); return 1; }
         }
+        int pp = Array.IndexOf(args, "--probe-player");
+        if (pp >= 0 && args.Length > pp + 1)
+        {
+            if (!Console.IsOutputRedirected) Native.AttachConsole(-1);
+            return DevTools.ProbePlayer(args[pp + 1]);
+        }
+        if (args.Contains("--probe-audio"))
+        {
+            if (!Console.IsOutputRedirected) Native.AttachConsole(-1);
+            return DevTools.ProbeAudio();
+        }
         int r = Array.IndexOf(args, "--render-ui");
         if (r >= 0)
         {
             var dir = args.Length > r + 1 ? args[r + 1] : Path.Combine(Path.GetTempPath(), "rewind-ui");
             int b = Array.IndexOf(args, "--background");
-            return DevTools.RenderUi(Path.GetFullPath(dir), b >= 0 && args.Length > b + 1 ? args[b + 1] : null);
+            int k = Array.IndexOf(args, "--clips");
+            return DevTools.RenderUi(Path.GetFullPath(dir), b >= 0 && args.Length > b + 1 ? args[b + 1] : null,
+                                     k >= 0 && args.Length > k + 1 ? args[k + 1] : null);
         }
 
         var action = RemoteAction.ShowSettings;

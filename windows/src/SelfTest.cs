@@ -12,6 +12,7 @@ static class SelfTest
         MF.Startup();
         bool ok = RunCodec(dir, VideoCodec.H264, 1280, 720, 60, seconds: 5, full: true);
         ok &= RunCodec(dir, VideoCodec.Hevc, 1920, 1080, 60, seconds: 4, full: false);
+        ok &= TestCleanup(dir);
         Console.WriteLine(ok ? "selftest passed" : "selftest FAILED");
         return ok ? 0 : 1;
     }
@@ -122,7 +123,71 @@ static class SelfTest
         {
             ok &= Inspect(recSep, audioTracks: 2, minSeconds: seconds - 0.5);
             ok &= Inspect(recMix, audioTracks: 1, minSeconds: seconds - 0.5);
+            ok &= TestTrim(recSep, audioTracks: 2);
         }
+        return ok;
+    }
+
+    /// Cutting 1.2s–3.7s out of the 5s recording should give a 2.5s clip, without re-encoding.
+    static bool TestTrim(string source, int audioTracks)
+    {
+        var dest = ClipTrimmer.OutputPath(source);
+        File.Delete(dest);
+        double length;
+        try { length = ClipTrimmer.TrimAsync(source, 1.2, 3.7, dest).GetAwaiter().GetResult(); }
+        catch (Exception e) { Console.WriteLine($"FAIL trim: {e}"); return false; }
+        var v = Mp4Reader.Open(dest).Video!;
+        double shown = v.PresentedDuration;
+        Console.Write($"trimmed to {shown:F2}s (wanted 2.50s, starts {v.EditMediaTime / (double)v.Timescale:F2}s into the file); ");
+        bool ok = Inspect(dest, audioTracks, minSeconds: 2.4);
+        if (Math.Abs(shown - 2.5) > 0.1 || Math.Abs(length - 2.5) > 0.1) { Console.WriteLine("FAIL trim length"); ok = false; }
+        File.Delete(dest);
+        return ok;
+    }
+
+    /// Only Rewind's own files older than the limit go; everything else stays.
+    static bool TestCleanup(string dir)
+    {
+        var d = Path.Combine(dir, "cleanup-test");
+        if (Directory.Exists(d)) Directory.Delete(d, true);
+        Directory.CreateDirectory(d);
+        var now = DateTime.Now;
+        var files = new (string name, double age, bool gone)[]
+        {
+            ("Replay 2026-01-01 at 10.00.00.mp4", 20, true),
+            ("Recording 2026-01-01 at 10.00.00.mp4", 15, true),
+            ("Screenshot 2026-01-01 at 10.00.00.png", 30, true),
+            ("Replay 2026-01-10 at 10.00.00.mp4", 13, false),
+            ("Recording in progress.mp4", 40, false),               // passed as `keep`
+            ("Holiday video.mp4", 99, false),
+            ("Replay notes.txt", 99, false),
+            (".mixing-ABC.mp4", 99, false),
+            ("Roblox 2026-01-01 at 10.00.00 (trimmed).mp4", 20, true), // app name Rewind used
+            ("Roblox notes.mp4", 99, false),                         // no date stamp
+            ("Minecraft 2026-01-01 at 10.00.00.mp4", 99, false),     // app name Rewind never used
+        };
+        foreach (var (name, age, _) in files)
+        {
+            var path = Path.Combine(d, name);
+            File.WriteAllBytes(path, new byte[1000]);
+            var date = now.AddDays(-age);
+            File.SetCreationTime(path, date);
+            File.SetLastWriteTime(path, date);
+        }
+        var r = Cleanup.Run(d, 14, now, keep: new[] { Path.Combine(d, "Recording in progress.mp4") }, appPrefixes: new[] { "Roblox" },
+                            remove: p => { File.Delete(p); return true; });
+        bool ok = r.Count == 4 && r.Bytes == 4000;
+        var names = new (string name, string? want)[]
+        {
+            ("Roblox 2026-11-13 at 16.53.58.mp4", "Roblox"), ("Sea of Thieves 2026-11-13 at 16.53.58 (2).png", "Sea of Thieves"),
+            ("Replay 2026-11-13 at 16.53.58.mp4", null), ("Holiday.mp4", null),
+        };
+        foreach (var (name, want) in names)
+            if (Cleanup.AppPrefix(name) != want) { Console.WriteLine($"FAIL app name of {name}: {Cleanup.AppPrefix(name) ?? "null"}"); ok = false; }
+        foreach (var (name, _, gone) in files)
+            if (File.Exists(Path.Combine(d, name)) == gone) { Console.WriteLine($"FAIL cleanup: {name} should {(gone ? "be removed" : "stay")}"); ok = false; }
+        Console.WriteLine($"cleanup: removed {r.Count} of {files.Length} files ({r.Bytes} bytes){(ok ? "" : " FAIL")}");
+        Directory.Delete(d, true);
         return ok;
     }
 

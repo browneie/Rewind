@@ -68,7 +68,8 @@ static class Theme
     };
 }
 
-enum Sym { Replay, ReplayOff, Record, RecordFill, Stop, Camera, Folder, Gear, Close, Check, Error, Warning, Hourglass, Lock, Keyboard, Display, App, Mic }
+enum Sym { Replay, ReplayOff, Record, RecordFill, Stop, Camera, Folder, Gear, Close, Check, Error, Warning, Hourglass, Lock, Keyboard, Display, App, Mic,
+           Trash, Play, Pause, Back, Scissors, Eye, Gamepad, StepBack, StepForward }
 
 static class Icons
 {
@@ -87,6 +88,15 @@ static class Icons
         Sym.Display => "",
         Sym.App => "",
         Sym.Mic => "",
+        Sym.Trash => "",
+        Sym.Play => "",
+        Sym.Pause => "",
+        Sym.Back => "",
+        Sym.Scissors => "",
+        Sym.Eye => "",
+        Sym.Gamepad => "",
+        Sym.StepBack => "",
+        Sym.StepForward => "",
         _ => null,
     };
 

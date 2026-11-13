@@ -83,7 +83,7 @@ sealed class Controller
     public void ToggleReplay() { if (ReplayActive) StopReplay(); else StartReplay(); }
     public void ToggleRecording() { if (Recording) StopRecording(); else StartRecording(); }
 
-    string Key(HotkeyAction a) => settings.Hotkey(a).Display;
+    static string Joined(string first, string hint) => hint.Length == 0 ? first : $"{first} · {hint}";
 
     AudioTrack[][] ReplayAudioGroups()
     {
@@ -107,7 +107,7 @@ sealed class Controller
             if (!ok || !ReplayActive) return;
             var what = engine.CapturedApp is { } app ? $"{app} · " : "";
             Toast.Show("Instant Replay is on",
-                $"{what}Keeping the last {Format.Duration(settings.ReplaySeconds)} · {Key(HotkeyAction.SaveReplay)} to save",
+                Joined($"{what}Keeping the last {Format.Duration(settings.ReplaySeconds)}", settings.HotkeyHint(HotkeyAction.SaveReplay, "to save")),
                 Sym.Replay, Theme.Green);
         });
     }
@@ -127,7 +127,9 @@ sealed class Controller
     {
         if (!ReplayActive)
         {
-            Toast.Show("Instant Replay is off", $"Press {Key(HotkeyAction.ToggleReplay)} to turn it on", Sym.Warning, Theme.Orange);
+            var hint = settings.HotkeyHint(HotkeyAction.ToggleReplay, "to turn it on");
+            Toast.Show("Instant Replay is off", hint.Length == 0 ? "Turn it on from the overlay or the tray menu." : "Press " + hint,
+                Sym.Warning, Theme.Orange);
             return;
         }
         var snap = Router.Replay.Snapshot();
@@ -136,11 +138,13 @@ sealed class Controller
             Toast.Show("Nothing to save yet", "The replay buffer is still empty.", Sym.Hourglass, Theme.Orange);
             return;
         }
-        if (MakeOutputPath("Replay", "mp4") is not { } path) return;
+        if (MakeOutputPath(NamePrefix("Replay"), "mp4") is not { } path) return;
         try
         {
             double length = await ClipWriter.WriteAsync(snap, path);
-            Toast.Show("Replay saved", $"{Format.Duration(length)} · {Path.GetFileName(path)}", Sym.Check, Theme.Green, onClick: () => Reveal(path));
+            ClipLibrary.RefreshIfShown();
+            Toast.Show("Replay saved", $"{Format.Duration(length)} · {Path.GetFileName(path)}", Sym.Check, Theme.Green,
+                onClick: () => OverlayController.Show(path));
         }
         catch (Exception e)
         {
@@ -151,7 +155,7 @@ sealed class Controller
 
     public void StartRecording()
     {
-        if (Recording || MakeOutputPath("Recording", "mp4") is not { } path) return;
+        if (Recording || MakeOutputPath(NamePrefix("Recording"), "mp4") is not { } path) return;
         var tracks = new List<AudioTrack>();
         if (settings.SystemAudio) tracks.Add(AudioTrack.System);
         if (settings.Microphone) tracks.Add(AudioTrack.Mic);
@@ -165,7 +169,8 @@ sealed class Controller
         {
             if (!ok || !Recording) return;
             engine.ForceKeyframe();
-            Toast.Show("Recording started", $"{Key(HotkeyAction.ToggleRecording)} to stop", Sym.RecordFill, Theme.Red);
+            var hint = settings.HotkeyHint(HotkeyAction.ToggleRecording, "to stop");
+            Toast.Show("Recording started", hint.Length == 0 ? null : hint, Sym.RecordFill, Theme.Red);
         });
     }
 
@@ -185,8 +190,9 @@ sealed class Controller
             try
             {
                 double length = await rec.FinishAsync();
+                ClipLibrary.RefreshIfShown();
                 Toast.Show("Recording saved", $"{Format.Duration(length)} · {Path.GetFileName(rec.Path)}", Sym.Check, Theme.Green,
-                    onClick: () => Reveal(rec.Path));
+                    onClick: () => OverlayController.Show(rec.Path));
             }
             catch (Exception e)
             {
@@ -198,7 +204,7 @@ sealed class Controller
 
     public async void Screenshot()
     {
-        if (MakeOutputPath("Screenshot", "png") is not { } path) return;
+        if (MakeOutputPath(NamePrefix("Screenshot"), "png") is not { } path) return;
         try
         {
             // While capturing, the screenshot is the newest frame from before the overlay opened. Otherwise a
@@ -209,7 +215,8 @@ sealed class Controller
                 await Task.Delay(300);
             }
             await engine.ScreenshotAsync(settings.DisplayId, settings.CaptureAppId, settings.ShowCursor, path);
-            Toast.Show("Screenshot saved", Path.GetFileName(path), Sym.Camera, Theme.Blue, onClick: () => Reveal(path));
+            ClipLibrary.RefreshIfShown();
+            Toast.Show("Screenshot saved", Path.GetFileName(path), Sym.Camera, Theme.Blue, onClick: () => OverlayController.Show(path));
         }
         catch (Exception e)
         {
@@ -231,10 +238,53 @@ sealed class Controller
     public void SettingsChanged()
     {
         Router.Replay.Duration = settings.ReplaySeconds;
+        var cleanupSig = settings.AutoCleanup ? $"{settings.CleanupDays}|{settings.OutputDirectory}" : "";
+        if (cleanupSig != lastCleanupSig) { lastCleanupSig = cleanupSig; CleanUpOldClips(); }
         // Mixing the mic in (or not) changes how replay audio is encoded; the buffered audio starts over.
         if (ReplayActive) Router.Replay.SetAudioGroups(ReplayAudioGroups());
         UpdatePause();
         if (IsCapturing && runningSignature != settings.CaptureSignature) Reconcile();
+    }
+
+    string lastCleanupSig = "";
+    DispatcherTimer? cleanupTimer;
+
+    /// Checks now, then every hour while Rewind runs.
+    public void StartCleanupSchedule()
+    {
+        lastCleanupSig = settings.AutoCleanup ? $"{settings.CleanupDays}|{settings.OutputDirectory}" : "";
+        CleanUpOldClips();
+        cleanupTimer ??= new DispatcherTimer(TimeSpan.FromHours(1), DispatcherPriority.Background, (_, _) => CleanUpOldClips(), ui);
+        cleanupTimer.Start();
+    }
+
+    public void CleanUpOldClips()
+    {
+        if (!settings.AutoCleanup) return;
+        string dir = settings.OutputDirectory;
+        int days = settings.CleanupDays;
+        var prefixes = settings.AppPrefixes.ToList();
+        var keep = Router.Recorder is { } r ? new[] { r.Path } : Array.Empty<string>();
+        Task.Run(() =>
+        {
+            var res = Cleanup.Run(dir, days, DateTime.Now, keep, prefixes);
+            if (res.Count == 0) return;
+            Toast.Show($"Moved {res.Count} old {(res.Count == 1 ? "file" : "files")} to the Recycle Bin",
+                $"Older than {days} {(days == 1 ? "day" : "days")} · {SizeText(res.Bytes)} freed once the bin is emptied",
+                Sym.Trash, Theme.Gray);
+        });
+    }
+
+    public static string SizeText(long bytes) => bytes >= 1L << 30 ? $"{bytes / (double)(1L << 30):F1} GB"
+        : bytes >= 1 << 20 ? $"{bytes / (double)(1 << 20):F0} MB" : $"{Math.Max(bytes / 1024, 1)} KB";
+
+    /// "Roblox" while capturing just that app, otherwise the usual "Replay" / "Recording" / "Screenshot".
+    string NamePrefix(string fallback)
+    {
+        string? app = IsCapturing ? engine.CapturedApp
+            : settings.CaptureAppId.Length > 0 && settings.CaptureAppName.Length > 0 && AppTarget.IsRunning(settings.CaptureAppId)
+                ? settings.CaptureAppName : null;
+        return app != null && settings.ClipPrefix(app) is { } prefix ? prefix : fallback;
     }
 
     bool overlayVisible;

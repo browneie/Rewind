@@ -69,6 +69,7 @@ sealed class HotkeyManager
         for (int i = 0; i < bindings.Count; i++)
         {
             var (hk, action) = bindings[i];
+            if (!hk.IsSet) continue;
             int id = i + 1;
             if (Native.RegisterHotKey(window!.Handle, id, hk.Modifiers | MOD_NOREPEAT, hk.Vk))
             {

@@ -83,6 +83,7 @@ sealed class Tray : IDisposable
         s.Changed += () => { settingsDebounce.Stop(); settingsDebounce.Start(); };
 
         _ = CaptureEngine.RequestBorderlessAsync();
+        c.StartCleanupSchedule();
 
         var ui = Dispatcher.CurrentDispatcher;
         if (args.Contains("--demo-toast"))
@@ -91,7 +92,11 @@ sealed class Tray : IDisposable
         if (args.Contains("--overlay")) After(1.5, OverlayController.Show);
 
         if (s.StartReplayOnLaunch) c.StartReplay();
-        else Toast.Show("Rewind is running", $"{s.Hotkey(HotkeyAction.ToggleOverlay).Display} opens the overlay", Sym.Record, Theme.Green);
+        else
+        {
+            var hint = s.HotkeyHint(HotkeyAction.ToggleOverlay, "opens the overlay");
+            Toast.Show("Rewind is running", hint.Length == 0 ? "Open the overlay from the tray icon." : hint, Sym.Record, Theme.Green);
+        }
     }
 
     static void After(double seconds, Action a)
@@ -143,7 +148,7 @@ sealed class Tray : IDisposable
     Forms.ToolStripMenuItem Add(string title, HotkeyAction action, Action run)
     {
         var i = Item(title, run);
-        i.ShortcutKeyDisplayString = s.Hotkey(action).Display;
+        if (s.Hotkey(action).IsSet) i.ShortcutKeyDisplayString = s.Hotkey(action).Display;
         return i;
     }
 

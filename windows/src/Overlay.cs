@@ -17,10 +17,16 @@ static class OverlayController
 
     public static bool IsVisible => window != null;
     public static void Toggle() { if (IsVisible) Hide(); else Show(); }
+    public static void Show() => Show(null);
 
-    public static void Show()
+    /// Opens the overlay, or with `previewPath` straight into that clip's preview.
+    public static void Show(string? previewPath)
     {
-        if (window != null) return;
+        if (window != null)
+        {
+            if (previewPath != null) window.OpenPreview(previewPath);
+            return;
+        }
         // If screen shares may see the overlay, so could Rewind's own display capture: hold the video first.
         Controller.Shared.OverlayChanged(true);
         var w = window = new OverlayWindow(Hide);
@@ -32,6 +38,8 @@ static class OverlayController
             t.Start();
         };
         w.Present();
+        ClipLibrary.Refresh();
+        if (previewPath != null) w.OpenPreview(previewPath);
     }
 
     public static void Hide()
@@ -52,7 +60,9 @@ sealed class OverlayWindow : Window
     readonly Native.RECT bounds;
     readonly IconTile replayTile, recordTile, screenshotTile;
     readonly TextBlock info, sound;
-    readonly StackPanel headerLeft;
+    readonly StackPanel headerLeft, home;
+    readonly Border panel;
+    ClipPreviewPane? preview;
     RecPill? recPill;
 
     public OverlayWindow(Action close)
@@ -123,12 +133,13 @@ sealed class OverlayWindow : Window
         footer.Children.Add(chips);
         footer.Children.Add(sound);
 
-        var stack = new StackPanel();
-        stack.Children.Add(header);
-        stack.Children.Add(tiles);
-        stack.Children.Add(footer);
+        home = new StackPanel();
+        home.Children.Add(header);
+        home.Children.Add(tiles);
+        home.Children.Add(new RecentClipsRow(Theme.S(150 * 3 + 14 * 2), item => OpenPreview(item.FilePath)));
+        home.Children.Add(footer);
 
-        var panel = new Border
+        panel = new Border
         {
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
@@ -137,7 +148,7 @@ sealed class OverlayWindow : Window
             Background = Theme.Brush(Theme.PanelBase, Theme.PanelOpacity),
             BorderBrush = Theme.Line,
             BorderThickness = new Thickness(1),
-            Child = stack,
+            Child = home,
             Effect = new DropShadowEffect { BlurRadius = Theme.S(40), ShadowDepth = Theme.S(15), Direction = 270, Opacity = 0.45, Color = Colors.Black },
         };
         var sheen = new Border
@@ -164,7 +175,7 @@ sealed class OverlayWindow : Window
         Content = root;
         cursorTick.Tick += (_, _) => UpdateCursor();
 
-        KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; close(); } };
+        PreviewKeyDown += OnKey;
         SourceInitialized += (_, _) =>
         {
             var hwnd = new WindowInteropHelper(this).Handle;
@@ -180,9 +191,47 @@ sealed class OverlayWindow : Window
             tick.Stop();
             cursorTick.Stop();
             c.StateChanged -= Refresh;
+            preview?.Stop();
             Mouse.OverrideCursor = null;
         };
         Refresh();
+    }
+
+    void OnKey(object sender, KeyEventArgs e)
+    {
+        e.Handled = true;
+        switch (e.Key)
+        {
+            case Key.Escape when preview is { IsTrimming: true }: preview.CancelTrim(); break;
+            case Key.Escape: close(); break;
+            case Key.Space when preview != null: preview.TogglePlay(); break;
+            case Key.Left when preview != null: preview.Step(-1); break;
+            case Key.Right when preview != null: preview.Step(1); break;
+            case Key.Enter when preview is { IsTrimming: true }: preview.ConfirmTrim(); break;
+            default: e.Handled = false; break;
+        }
+    }
+
+    public void OpenPreview(string path) => OpenPreview(path, null);
+
+    public void OpenPreview(string path, Size? screenSize)
+    {
+        if (!File.Exists(path)) return;
+        preview?.Stop();
+        var item = ClipLibrary.Items.FirstOrDefault(i => string.Equals(i.FilePath, path, StringComparison.OrdinalIgnoreCase))
+                   ?? new ClipItem(path, File.GetCreationTime(path));
+        var m = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+        var screen = screenSize ?? new Size(bounds.Width * m.M11, bounds.Height * m.M22);
+        preview = new ClipPreviewPane(item, screen, ShowHome, close);
+        panel.Child = preview;
+    }
+
+    void ShowHome()
+    {
+        preview?.Stop();
+        preview = null;
+        panel.Child = home;
+        ClipLibrary.Refresh();
     }
 
     readonly DispatcherTimer cursorTick = new(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(15) };

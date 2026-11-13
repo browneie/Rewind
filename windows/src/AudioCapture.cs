@@ -14,6 +14,10 @@ sealed class AudioCapture : IDisposable
     volatile bool stop;
     Exception? startError;
 
+    /// System audio is taken from every app except Rewind, so a clip previewed in the overlay isn't recorded.
+    /// False on Windows versions without that (before build 20348), which record the whole output device.
+    public bool ExcludesRewind { get; private set; }
+
     public string Description => source switch
     {
         Source.SystemLoopback => "system audio",
@@ -82,7 +86,7 @@ sealed class AudioCapture : IDisposable
                 s.Event.WaitOne(100);
                 Read(s);
 
-                if (source != Source.Process && Environment.TickCount64 > nextDeviceCheck)
+                if (s.DeviceId != null && Environment.TickCount64 > nextDeviceCheck)
                 {
                     nextDeviceCheck = Environment.TickCount64 + 2000;
                     if (DefaultDeviceId() is { } id && id != s.DeviceId)
@@ -145,6 +149,10 @@ sealed class AudioCapture : IDisposable
                     !TryInit(s, LOOPBACK | EVENTCALLBACK, float32: false))
                     throw new RewindException("Couldn't open the app's audio.");
             }
+            else if (source == Source.SystemLoopback && OpenAllButRewind(s))
+            {
+                ExcludesRewind = true;
+            }
             else
             {
                 var enumerator = (IMMDeviceEnumerator)Activator.CreateInstance(Type.GetTypeFromCLSID(CLSID_MMDeviceEnumerator)!)!;
@@ -190,6 +198,21 @@ sealed class AudioCapture : IDisposable
             s.Dispose();
             throw;
         }
+    }
+
+    static bool OpenAllButRewind(Stream s)
+    {
+        try
+        {
+            s.Client = ActivateProcessLoopback((uint)Environment.ProcessId, exclude: true);
+            if (TryInit(s, LOOPBACK | EVENTCALLBACK | AUTOCONVERTPCM | SRC_DEFAULT_QUALITY, float32: true, out _) ||
+                TryInit(s, LOOPBACK | EVENTCALLBACK, float32: true, out _))
+                return true;
+        }
+        catch (Exception e) { Log.Info($"system audio without Rewind unavailable ({e.Message}), recording the whole device"); }
+        if (s.Client != null) Marshal.ReleaseComObject(s.Client);
+        s.Client = null!;
+        return false;
     }
 
     RewindException MicDenied(int hr) => source == Source.Microphone
@@ -270,9 +293,9 @@ sealed class AudioCapture : IDisposable
         public void ActivateCompleted(IActivateAudioInterfaceAsyncOperation op) => Done.Set();
     }
 
-    static IAudioClient ActivateProcessLoopback(uint pid)
+    static IAudioClient ActivateProcessLoopback(uint pid, bool exclude = false)
     {
-        var p = new AUDIOCLIENT_ACTIVATION_PARAMS { ActivationType = 1, TargetProcessId = pid, ProcessLoopbackMode = 0 };
+        var p = new AUDIOCLIENT_ACTIVATION_PARAMS { ActivationType = 1, TargetProcessId = pid, ProcessLoopbackMode = exclude ? 1 : 0 };
         IntPtr pParams = Marshal.AllocHGlobal(Marshal.SizeOf<AUDIOCLIENT_ACTIVATION_PARAMS>());
         IntPtr pVar = Marshal.AllocHGlobal(Marshal.SizeOf<PROPVARIANT_BLOB>());
         try

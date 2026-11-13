@@ -11,9 +11,11 @@ The Windows port of [Rewind](../README.md), the ShadowPlay-style screen recorder
 - **Instant Replay.** Keeps the last 15 seconds to 20 minutes ready to save with one hotkey. Clips are written without re-encoding, so saving is near-instant.
 - **Recording.** Start/stop a normal recording at any time; it runs alongside Instant Replay.
 - **Screenshots.** Full-resolution PNG of the display.
-- **Capture one app.** Choose an app (a game, say) in Settings, and only its window and sound are recorded, so notifications and other apps stay out of your clips. If the app isn't running, Rewind records the whole display and switches over automatically when the app opens.
+- **Capture one app.** Choose an app (a game, say) in Settings, and only its window and sound are recorded, so notifications and other apps stay out of your clips. If the app isn't running, Rewind records the whole display and switches over automatically when the app opens. Clips of that app are named after it, like `Roblox 2026-11-13 at 16.53.58.mp4`. Games that run inside Java, Python or Electron are named from their window title, so Minecraft clips say Minecraft rather than Java.
 - **Hardware encoding.** Captures with Windows.Graphics.Capture and encodes H.264 or HEVC on the GPU (NVIDIA NVENC, Intel Quick Sync or AMD AMF), so it's light on the CPU while you play.
 - **Audio.** System audio and/or microphone. By default your mic is mixed into the main track so clips play correctly everywhere; turn that off to keep them as separate tracks for editing.
+- **Auto-cleanup** (optional, off by default). Moves clips and screenshots older than a set number of days (14 by default) to the Recycle Bin. Only Rewind's own files are touched.
+- **Preview and trim clips in the overlay.** Your latest clips and screenshots show as thumbnails under the tiles. Click one to play it right in the overlay (Space plays or pauses, ← → step a frame), trim it, show it in Explorer, or move it to the Recycle Bin. Clicking a "saved" notification opens the clip there too. Trimming saves a new file next to the original (`… (trimmed).mp4`) without re-encoding, so it's instant and loses no quality.
 - **In-game overlay** (Alt+Z). Works over borderless/windowed fullscreen games, and frees the mouse pointer that games hide and lock. Friends watching your Discord or OBS screen share can see it, but it never appears in your own clips.
 - **Global hotkeys** that work while a game has focus, and can be changed in Settings.
 
@@ -28,6 +30,8 @@ The Windows port of [Rewind](../README.md), the ShadowPlay-style screen recorder
 | Alt+F1 | Take a screenshot |
 
 These are the same keys as NVIDIA ShadowPlay. If the NVIDIA or AMD overlay is running, it already owns some of them; Rewind tells you which ones are taken, and you can pick others in Settings.
+
+To change a hotkey, click it in Settings and press the new keys. Press **Esc** instead to remove it (it shows "No bind set").
 
 In the overlay, **left-click** Instant Replay to save a clip and **right-click** it to turn replay off. Record and Screenshot work with either mouse button.
 
@@ -48,7 +52,7 @@ Clips are saved to `Videos\Rewind` by default.
 
 <img src="docs/settings.png" width="420" alt="Settings window">
 
-Choose what to capture (the whole display or one app), the display, resolution, frame rate (pick one or type any from 1 to 360 fps), quality, codec, replay length, audio sources and whether to mix the mic in, save folder, hotkeys, whether screen shares can see the overlay and Settings, and whether Rewind opens when Windows starts. The Settings window shows how much RAM the replay buffer will use.
+Choose what to capture (the whole display or one app), the display, resolution, frame rate (pick one or type any from 1 to 360 fps), quality, codec, replay length, audio sources and whether to mix the mic in, save folder, auto-cleanup of old clips, hotkeys, whether screen shares can see the overlay and Settings, and whether Rewind opens when Windows starts. The Settings window shows how much RAM the replay buffer will use.
 
 While the overlay is open over a whole-display capture that screen shares can see, Rewind's own video holds its last frame (sound keeps recording), so the overlay stays out of your clips. Notifications are always hidden from every capture.
 
@@ -61,7 +65,7 @@ Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download). Nothing else:
 ```powershell
 .\build.ps1              # builds build\Rewind.exe for this PC (needs the .NET 10 Desktop Runtime)
 .\build.ps1 -SelfTest    # ...and runs the pipeline self-test
-.\release.ps1 1.0.0      # self-contained single-file x64 + ARM64 zips in dist\
+.\release.ps1 1.3.0      # self-contained single-file x64 + ARM64 zips in dist\
 ```
 
 Or simply `dotnet run` from this folder.
@@ -72,7 +76,7 @@ To check the capture → encode → replay → MP4 pipeline without recording th
 .\build\Rewind.exe --selftest $env:TEMP\rewind-test
 ```
 
-To redraw the Windows icon after changing the app icon ([`scripts/make-icon.swift`](../scripts/make-icon.swift) writes `docs/icon.png`):
+To redraw the Windows icon from [`docs/icon.png`](../docs/icon.png):
 
 ```powershell
 .\scripts\make-icon.ps1
@@ -85,8 +89,10 @@ To redraw the Windows icon after changing the app icon ([`scripts/make-icon.swif
 | `--selftest <dir>` | Pipeline self-test (see above). |
 | `--bench [seconds]` | Measures what Instant Replay costs (CPU, GPU engines, wake-ups, RAM, MB/min) while recording an animated test window with fixed settings, then times saving a clip. Add `--fps 30`, `--desktop` or `--use-settings` to vary it. |
 | `--action <name>` | Tells the running Rewind to `save-replay`, `toggle-replay`, `toggle-recording`, `screenshot`, `toggle-overlay`, `settings` or `quit`. Handy for scripts and stream decks. |
-| `--render-ui <dir>` | Draws the overlay, a notification and the Settings window to PNGs. |
+| `--render-ui <dir>` | Draws the overlay, a notification and the Settings window to PNGs. Add `--background <image>` to draw the overlay over a game screenshot, and `--clips <folder>` to fill its recent clips from that folder (and draw a preview of the newest). |
 | `--probe-capture` | Counts frames from the primary display for two seconds, to diagnose capture problems. Saves nothing. |
+| `--probe-player <clip>` | Plays a clip muted, without a window, through the overlay's player, then seeks and steps a frame, to check playback works. |
+| `--probe-audio` | Listens to system audio for two seconds and reports whether Rewind's own sound is left out and how loud it was. Plays nothing. |
 | `--probe-overlay-cursor` | Opens the overlay over a stand-in game that hides and locks the mouse pointer, and checks a pointer is usable. |
 | `--quality-test [dir]` | Encodes the same synthetic game and desktop footage with different encoder settings and reports size against quality (PSNR, SSIM, worst frame). |
 | `--inspect <file>` | Shows what Windows' media stack sees in a clip: tracks, decoded frames, durations. |
@@ -112,11 +118,14 @@ The files mirror `Sources/Rewind/` one to one, so a change on one side is easy t
 | Menu bar item | Notification-area icon | `App.cs` |
 | SwiftUI overlay, toasts, settings | WPF (settings use the Windows 11 Fluent theme) | `Overlay.cs`, `Toast.cs`, `SettingsWindow.cs` |
 | `UserDefaults`, `SMAppService` | JSON file, `HKCU\…\Run` | `Settings.cs`, `SettingsWindow.cs` |
-| Replay buffer, controller | Same logic, ported line for line | `ReplayBuffer.cs`, `Controller.cs` |
+| Replay buffer, controller, auto-cleanup | Same logic, ported line for line | `ReplayBuffer.cs`, `Controller.cs`, `Cleanup.cs` |
+| AVPlayer preview, AVAssetExportSession passthrough trim, QuickLook thumbnails | Media Foundation's Media Engine drawing into a WPF bitmap, a passthrough trimmer on the built-in MP4 reader and muxer, Explorer's thumbnails | `Clips.cs`, `ClipPlayer.cs`, `Mp4Reader.cs` |
 
 ## Known limitations
 
 - Saved replays can be up to 2 seconds longer than the set length, because clips have to start on a keyframe. Keyframes come every 2 seconds (1 on macOS) because that makes files smaller at the same quality.
+- A trimmed clip has to begin on a keyframe, so the file also holds up to 2 seconds from before the cut, and an MP4 edit list says where the clip really starts. Rewind's preview and players that read edit lists (VLC, ffmpeg-based apps, video editors) start exactly at the cut. Windows' Photos and Media Player apps ignore it and play those extra seconds first.
+- The overlay's player uses Windows' own codecs, so HEVC clips only play there if the HEVC Video Extensions are installed (the same as for the Photos and Media Player apps). While a game is busy with the GPU, HEVC previews can stutter; the clips themselves are fine.
 - When nothing on screen changes, Windows sends no new frames, so the video holds the last frame instead of keeping a constant frame rate.
 - Opening the overlay takes focus from the game, so games that pause on focus loss will pause.
 - The overlay and notifications can't draw over games in *exclusive* fullscreen; use borderless or windowed fullscreen (most games default to it now). Capture itself works either way.

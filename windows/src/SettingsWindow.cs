@@ -28,7 +28,7 @@ sealed class SettingsWindow : Window
 
     public static FrameworkElement CreateForPreview()
     {
-        var w = new SettingsWindow { ShowActivated = false, WindowStartupLocation = WindowStartupLocation.Manual, Left = -30000, Top = -30000 };
+        var w = new SettingsWindow { ShowActivated = false, ShowInTaskbar = false, WindowStartupLocation = WindowStartupLocation.Manual, Left = -30000, Top = -30000 };
         w.Show();
         w.UpdateLayout();
         var page = w.root;
@@ -145,13 +145,28 @@ sealed class SettingsWindow : Window
         var saveRow = new StackPanel { Orientation = Orientation.Horizontal };
         saveRow.Children.Add(folder);
         saveRow.Children.Add(choose);
-        Section("Saving", new[] { Row("Save to", saveRow) });
+        var keepFor = Combo(Cleanup.DayOptions.Select(n => (n == 1 ? "1 day" : $"{n} days", n)), s.CleanupDays, v => s.CleanupDays = v);
+        var saveFooter = Footer("");
+        refreshers.Add(() =>
+        {
+            keepFor.IsEnabled = s.AutoCleanup;
+            saveFooter.Text = s.AutoCleanup
+                ? $"Replays, recordings and screenshots older than {s.CleanupDays} {(s.CleanupDays == 1 ? "day" : "days")} are moved to the Recycle Bin, so you can still get them back. Other files in the folder are never touched."
+                : "Clips are kept until you delete them.";
+        });
+        Section("Saving", new[]
+        {
+            Row("Save to", saveRow),
+            Toggle("Delete old clips automatically", s.AutoCleanup, v => s.AutoCleanup = v),
+            Row("Keep clips for", keepFor),
+        }, saveFooter);
 
         var hotkeyRows = HotkeyActions.All.Select(a => Row(a.Label(), new HotkeyField(this, a))).ToList();
         var reset = new Button { Content = "Reset to defaults", HorizontalAlignment = HorizontalAlignment.Left };
         reset.Click += (_, _) => s.ResetHotkeys();
         hotkeyRows.Add(Pad(reset));
-        Section("Hotkeys", hotkeyRows.ToArray(), Footer("Hotkeys work while a game has focus. If one is taken by another app (the NVIDIA or AMD overlay uses some of the same keys), pick a different one."));
+        Section("Hotkeys", hotkeyRows.ToArray(), Footer("Click a shortcut, then press the new keys. Press Esc to remove it, or click it again to keep it. " +
+            "Hotkeys work while a game has focus. If one is taken by another app (the NVIDIA or AMD overlay uses some of the same keys), pick a different one."));
 
         Section("Screen sharing", new[]
         {
@@ -295,8 +310,24 @@ sealed class SettingsWindow : Window
             SetResourceReference(StyleProperty, typeof(Button)); // subclasses don't get the theme's Button style
             MinWidth = 150;
             Click += (_, _) => { if (recording) Cancel(); else Start(); };
-            owner.refreshers.Add(() => { if (!recording) Content = owner.s.Hotkey(action).Display; });
-            Content = owner.s.Hotkey(action).Display;
+            owner.refreshers.Add(() => { if (!recording) ShowCurrent(); });
+            ShowCurrent();
+        }
+
+        void ShowCurrent()
+        {
+            var hk = owner.s.Hotkey(action);
+            Content = hk.Display;
+            Opacity = hk.IsSet ? 1 : 0.6;
+        }
+
+        public void Clear()
+        {
+            recording = false;
+            if (owner.recordingField == this) owner.recordingField = null;
+            owner.s.ClearHotkey(action);
+            ShowCurrent();
+            HotkeyManager.Shared.Resume();
         }
 
         void Start()
@@ -305,6 +336,7 @@ sealed class SettingsWindow : Window
             recording = true;
             owner.recordingField = this;
             Content = "Press a shortcut…";
+            Opacity = 1;
             HotkeyManager.Shared.Suspend();
         }
 
@@ -313,7 +345,7 @@ sealed class SettingsWindow : Window
             if (!recording) return;
             recording = false;
             if (owner.recordingField == this) owner.recordingField = null;
-            Content = owner.s.Hotkey(action).Display;
+            ShowCurrent();
             HotkeyManager.Shared.Resume();
         }
 
@@ -330,7 +362,7 @@ sealed class SettingsWindow : Window
             recording = false;
             owner.recordingField = null;
             owner.s.SetHotkey(hk, action);
-            Content = hk.Display;
+            ShowCurrent();
             HotkeyManager.Shared.Resume();
         }
     }
@@ -340,7 +372,7 @@ sealed class SettingsWindow : Window
         if (recordingField == null) return;
         e.Handled = true;
         var key = e.Key == Key.System ? e.SystemKey : e.Key == Key.ImeProcessed ? e.ImeProcessedKey : e.Key;
-        if (key == Key.Escape) { recordingField.Cancel(); return; }
+        if (key == Key.Escape) { recordingField.Clear(); return; }
         if (key is Key.LeftAlt or Key.RightAlt or Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin or Key.None)
             return;
         recordingField.Take(key, Keyboard.Modifiers);

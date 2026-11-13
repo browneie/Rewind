@@ -8,7 +8,7 @@ namespace Rewind;
 
 static class DevTools
 {
-    public static int RenderUi(string dir, string? background = null)
+    public static int RenderUi(string dir, string? background = null, string? clips = null)
     {
         Directory.CreateDirectory(dir);
         Settings.UseDefaults();
@@ -20,11 +20,22 @@ static class DevTools
             {
                 BitmapSource? game = background == null ? null : new BitmapImage(new Uri(Path.GetFullPath(background)));
                 int w = game?.PixelWidth ?? 1600, h = game?.PixelHeight ?? 1000;
+                if (clips != null) ClipLibrary.LoadNow(Path.GetFullPath(clips));
                 var overlay = new OverlayWindow(() => { });
                 overlay.ShowPreviewState(w, h);
                 var content = (FrameworkElement)overlay.Content;
                 overlay.Content = null;
                 Save(game == null ? OnBackground(content, w, h) : OnImage(content, game), Path.Combine(dir, "overlay.png"));
+
+                if (ClipLibrary.Items.FirstOrDefault() is { } clip)
+                {
+                    var previewing = new OverlayWindow(() => { });
+                    previewing.ShowPreviewState(w, h);
+                    previewing.OpenPreview(clip.FilePath, new Size(w, h));
+                    var page = (FrameworkElement)previewing.Content;
+                    previewing.Content = null;
+                    Save(game == null ? OnBackground(page, w, h) : OnImage(page, game), Path.Combine(dir, "overlay-preview.png"));
+                }
 
                 var toast = Toast.BuildCard("Replay saved", "2:00 · Replay 2026-11-13 at 21.04.11.mp4", Sym.Check, Theme.Replay, clickable: true);
                 Save(OnBackground(toast, 560, 140), Path.Combine(dir, "notification.png"));
@@ -128,6 +139,79 @@ static class DevTools
         MF.Startup();
         Probe(configure: false, where: "main thread");
         Task.Run(() => Probe(configure: true, where: "thread pool")).Wait();
+        return 0;
+    }
+
+    /// Plays a clip muted, without a window, through the overlay's player, then seeks and steps a frame.
+    public static int ProbePlayer(string path)
+    {
+        MF.Startup();
+        var app = new System.Windows.Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        int code = 1;
+        app.Startup += async (_, _) =>
+        {
+            try
+            {
+                var full = Path.GetFullPath(path);
+                var info = ClipLibrary.Probe(new ClipItem(full, DateTime.Now));
+                double leadIn = info.LeadIn;
+                using var p = new ClipPlayer(full, 640, 360, leadIn, info.Duration, muted: true);
+                var opened = new TaskCompletionSource<string?>();
+                p.Opened += () => opened.TrySetResult(null);
+                p.Failed += m => opened.TrySetResult(m);
+                var pump = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(8) };
+                var shown = new List<double>();
+                pump.Tick += (_, _) => { if (p.Update()) shown.Add(p.ShownPts / 1e7); };
+                pump.Start();
+                if (await Task.WhenAny(opened.Task, Task.Delay(5000)) != opened.Task || opened.Task.Result is { } error)
+                {
+                    Console.WriteLine($"{Path.GetFileName(path)}: FAIL {(opened.Task.IsCompleted ? opened.Task.Result : "never opened")}");
+                    return;
+                }
+                p.Play();
+                await Task.Delay(1500);
+                int frames = p.FramesShown; double playedTo = p.Position;
+                if (Environment.GetEnvironmentVariable("REWIND_SELFTEST_DEBUG") == "1")
+                    Console.WriteLine("  shown at: " + string.Join(" ", shown.Select(t => t.ToString("F3"))));
+                p.Pause();
+                p.Position = 1.0;
+                await Task.Delay(400);
+                double seeked = p.Position; int before = p.FramesShown;
+                p.Step(1, 60);
+                await Task.Delay(300);
+                string Pixel()
+                {
+                    var px = new byte[4];
+                    p.Frame!.CopyPixels(new Int32Rect(p.Frame.PixelWidth / 2, p.Frame.PixelHeight / 2, 1, 1), px, 4, 0);
+                    return $"#{px[2]:X2}{px[1]:X2}{px[0]:X2}";
+                }
+                Console.WriteLine($"{Path.GetFileName(path)}: {p.Frame!.PixelWidth}x{p.Frame.PixelHeight}, {p.Duration:F2}s from {leadIn:F2}s into the file; 1.5 s of play showed {frames} frames " +
+                                  $"and reached {playedTo:F2}s; seek to 1.00 -> {seeked:F3}s; step -> {p.Position:F3}s (+{p.FramesShown - before} frame); centre {Pixel()}");
+                code = 0;
+            }
+            catch (Exception e) { Console.WriteLine($"{Path.GetFileName(path)}: FAIL {e.Message}"); }
+            finally { app.Shutdown(code); }
+        };
+        app.Run();
+        return code;
+    }
+
+    /// Listens to system audio for two seconds (plays nothing) and reports how it's captured and how loud it was.
+    public static int ProbeAudio()
+    {
+        int chunks = 0; long frames = 0; float peak = 0;
+        try
+        {
+            using var a = AudioCapture.Start(AudioCapture.Source.SystemLoopback, 0, c =>
+            {
+                chunks++; frames += c.Frames;
+                foreach (var v in c.Samples) peak = Math.Max(peak, Math.Abs(v));
+            });
+            Thread.Sleep(2000);
+            Console.WriteLine($"system audio ({(a.ExcludesRewind ? "every app except Rewind" : "whole output device")}): " +
+                              $"{chunks} chunks, {frames / (double)Audio.Rate:F2} s of sound in 2 s, peak {peak:F3}");
+        }
+        catch (Exception e) { Console.WriteLine($"system audio: FAIL {e.Message}"); return 1; }
         return 0;
     }
 

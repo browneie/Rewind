@@ -1,4 +1,4 @@
-# Builds windows/Assets/Rewind.ico from docs/icon.png (drawn by scripts/make-icon.swift).
+# Builds windows/Assets/Rewind.ico from docs/icon.png.
 # Run from anywhere:  powershell -ExecutionPolicy Bypass -File windows\scripts\make-icon.ps1
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
