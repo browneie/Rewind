@@ -206,6 +206,7 @@ final class Settings: ObservableObject {
         static let hotkeys = "hotkeys"
         static let appID = "captureAppID", appName = "captureAppName"
         static let mixMic = "mixMicrophone"
+        static let cleanup = "autoCleanup", cleanupDays = "cleanupDays"
     }
 
     @Published var displayID: UInt32 { didSet { d.set(Int(displayID), forKey: K.display) } }
@@ -222,6 +223,8 @@ final class Settings: ObservableObject {
     @Published var replaySeconds: Int { didSet { d.set(replaySeconds, forKey: K.replay) } }
     @Published var startReplayOnLaunch: Bool { didSet { d.set(startReplayOnLaunch, forKey: K.startReplay) } }
     @Published var outputDirectory: URL { didSet { d.set(outputDirectory.path, forKey: K.output) } }
+    @Published var autoCleanup: Bool { didSet { d.set(autoCleanup, forKey: K.cleanup) } }
+    @Published var cleanupDays: Int { didSet { d.set(cleanupDays, forKey: K.cleanupDays) } }
     @Published private(set) var hotkeys: [String: Hotkey] {
         didSet { d.set(try? JSONEncoder().encode(hotkeys), forKey: K.hotkeys) }
     }
@@ -230,7 +233,7 @@ final class Settings: ObservableObject {
         d.register(defaults: [
             K.fps: 60, K.quality: Quality.high.rawValue, K.codec: VideoCodec.h264.rawValue,
             K.resolution: 0, K.cursor: true, K.sysAudio: true, K.mic: false, K.mixMic: true,
-            K.replay: 120, K.startReplay: true,
+            K.replay: 120, K.startReplay: true, K.cleanup: false, K.cleanupDays: 14,
         ])
         displayID = UInt32(clamping: d.integer(forKey: K.display))
         captureAppID = d.string(forKey: K.appID) ?? ""
@@ -245,6 +248,8 @@ final class Settings: ObservableObject {
         mixMicrophone = d.bool(forKey: K.mixMic)
         replaySeconds = d.integer(forKey: K.replay)
         startReplayOnLaunch = d.bool(forKey: K.startReplay)
+        autoCleanup = d.bool(forKey: K.cleanup)
+        cleanupDays = max(1, d.integer(forKey: K.cleanupDays))
         outputDirectory = d.string(forKey: K.output).map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0].appendingPathComponent("Rewind")
         if let data = d.data(forKey: K.hotkeys),

@@ -191,7 +191,40 @@ final class Controller: ObservableObject {
 
     func settingsChanged() {
         router.replay.duration = Double(settings.replaySeconds)
+        let cleanupSig = settings.autoCleanup ? "\(settings.cleanupDays)|\(settings.outputDirectory.path)" : ""
+        if cleanupSig != lastCleanupSig { lastCleanupSig = cleanupSig; cleanUpOldClips() }
         if isCapturing, runningSignature != settings.captureSignature { reconcile() }
+    }
+
+    // MARK: Auto-cleanup
+
+    private var lastCleanupSig = ""
+    private var cleanupTimer: Timer?
+
+    /// Checks now, then every hour while Rewind runs.
+    func startCleanupSchedule() {
+        lastCleanupSig = settings.autoCleanup ? "\(settings.cleanupDays)|\(settings.outputDirectory.path)" : ""
+        cleanUpOldClips()
+        cleanupTimer?.invalidate()
+        cleanupTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { _ in
+            MainActor.assumeIsolated { Controller.shared.cleanUpOldClips() }
+        }
+    }
+
+    func cleanUpOldClips() {
+        guard settings.autoCleanup else { return }
+        let dir = settings.outputDirectory, days = settings.cleanupDays
+        let keep: Set<URL> = router.recorder.map { [$0.url] } ?? []
+        Task.detached(priority: .utility) {
+            let r = Cleanup.run(in: dir, olderThan: days, keep: keep)
+            guard r.count > 0 else { return }
+            await MainActor.run {
+                let size = ByteCountFormatter.string(fromByteCount: r.bytes, countStyle: .file)
+                Toast.show("Moved \(r.count) old \(r.count == 1 ? "file" : "files") to the Trash",
+                           "Older than \(days) \(days == 1 ? "day" : "days") · \(size) freed",
+                           icon: "trash.fill", tint: .gray)
+            }
+        }
     }
 
     var bufferedSeconds: Double { router.replay.bufferedSeconds }

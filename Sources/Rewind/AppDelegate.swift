@@ -31,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .sink { [weak self] in self?.controller.settingsChanged() }
             .store(in: &cancellables)
 
+        controller.startCleanupSchedule()
+
         if !CGPreflightScreenCaptureAccess() {
             CGRequestScreenCaptureAccess()
         }

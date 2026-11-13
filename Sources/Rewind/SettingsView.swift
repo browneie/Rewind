@@ -9,9 +9,12 @@ final class SettingsWindow {
 
     func show() {
         if window == nil {
-            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView()))
+            let host = NSHostingController(rootView: SettingsView())
+            host.sizingOptions = [] // size the window ourselves; auto-sizing can collapse it to 2 px wide
+            let w = NSWindow(contentViewController: host)
             w.title = "Rewind Settings"
             w.styleMask = [.titled, .closable, .miniaturizable]
+            w.setContentSize(NSSize(width: 520, height: 680))
             w.isReleasedWhenClosed = false
             w.center()
             window = w
@@ -131,7 +134,7 @@ struct SettingsView: View {
                 Text(estimate).font(.caption).foregroundStyle(.secondary)
             }
 
-            Section("Saving") {
+            Section {
                 LabeledContent("Save to") {
                     HStack {
                         Text(s.outputDirectory.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
@@ -139,6 +142,18 @@ struct SettingsView: View {
                         Button("Choose…", action: chooseFolder)
                     }
                 }
+                Toggle("Delete old clips automatically", isOn: $s.autoCleanup)
+                Picker("Keep clips for", selection: $s.cleanupDays) {
+                    ForEach(Cleanup.dayOptions, id: \.self) { Text($0 == 1 ? "1 day" : "\($0) days").tag($0) }
+                }
+                .disabled(!s.autoCleanup)
+            } header: {
+                Text("Saving")
+            } footer: {
+                Text(s.autoCleanup
+                     ? "Replays, recordings and screenshots older than \(s.cleanupDays) \(s.cleanupDays == 1 ? "day" : "days") are moved to the Trash, so you can still get them back. Other files in the folder are never touched."
+                     : "Clips are kept until you delete them.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section {

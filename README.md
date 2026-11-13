@@ -14,6 +14,7 @@ A ShadowPlay-style screen recorder for macOS. Rewind keeps the last few minutes 
 - **Capture one app.** Choose an app (a game, say) in Settings, and only its windows and sound are recorded, so notifications and other apps stay out of your clips. If the app isn't running, Rewind records the whole display and switches over automatically when the app opens.
 - **Hardware encoding.** Captures with ScreenCaptureKit and encodes H.264 or HEVC on the Apple media engine, so it's light on the CPU and GPU while you play.
 - **Audio.** System audio and/or microphone. By default your mic is mixed into the main track so clips play correctly everywhere; turn that off to keep them as separate tracks for editing.
+- **Auto-cleanup** (optional, off by default). Moves clips and screenshots older than a set number of days (14 by default) to the Trash. Only Rewind's own files are touched.
 - **In-game overlay** (⌥Z). Works over fullscreen apps. Rewind's own windows never appear in your clips.
 - **Global hotkeys** that work while a game has focus, and can be changed in Settings.
 
@@ -50,7 +51,7 @@ Clips are saved to `~/Movies/Rewind` by default.
 
 <img src="docs/settings.png" width="420" alt="Settings window">
 
-Choose what to capture (the whole display or one app), the display, resolution, frame rate (30/60/120), quality, codec, replay length, audio sources and whether to mix the mic in, save folder, hotkeys, and whether Rewind opens at login. The Settings window shows how much RAM the replay buffer will use.
+Choose what to capture (the whole display or one app), the display, resolution, frame rate (30/60/120), quality, codec, replay length, audio sources and whether to mix the mic in, save folder, auto-cleanup of old clips, hotkeys, and whether Rewind opens at login. The Settings window shows how much RAM the replay buffer will use.
 
 ## Build from source
 
