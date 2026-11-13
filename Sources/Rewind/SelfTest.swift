@@ -90,8 +90,34 @@ enum SelfTest {
             print("after mixdown:", terminator: " ")
             if !inspect(url, audioTracks: 1) { failed = true }
         }
+        if !testTrim(recURL) { failed = true }
         if !testCleanup(dir: dir) { failed = true }
         return failed ? 1 : 0
+    }
+
+    /// Cutting 1.2s–3.7s out of the 5s recording should give a 2.5s clip, without re-encoding.
+    private static func testTrim(_ source: URL) -> Bool {
+        let dest = ClipTrimmer.outputURL(for: source)
+        try? FileManager.default.removeItem(at: dest)
+        let range = CMTimeRange(start: CMTime(seconds: 1.2, preferredTimescale: 600),
+                                end: CMTime(seconds: 3.7, preferredTimescale: 600))
+        let sem = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var trimError: Error?
+        nonisolated(unsafe) var length = 0.0
+        Task {
+            do {
+                try await ClipTrimmer.trim(source, range: range, to: dest)
+                length = try await AVURLAsset(url: dest).load(.duration).seconds
+            } catch { trimError = error }
+            sem.signal()
+        }
+        sem.wait()
+        if let trimError { print("FAIL trim: \(trimError)"); return false }
+        print(String(format: "trimmed to %.2fs (wanted 2.50s) → ", length), terminator: "")
+        var ok = inspect(dest, audioTracks: 1)
+        if abs(length - 2.5) > 0.1 { print("FAIL trim length"); ok = false }
+        try? FileManager.default.removeItem(at: dest)
+        return ok
     }
 
     /// Only Rewind's own files older than the limit go; everything else stays.

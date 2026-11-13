@@ -15,6 +15,7 @@ A ShadowPlay-style screen recorder for macOS. Rewind keeps the last few minutes 
 - **Hardware encoding.** Captures with ScreenCaptureKit and encodes H.264 or HEVC on the Apple media engine, so it's light on the CPU and GPU while you play.
 - **Audio.** System audio and/or microphone. By default your mic is mixed into the main track so clips play correctly everywhere; turn that off to keep them as separate tracks for editing.
 - **Auto-cleanup** (optional, off by default). Moves clips and screenshots older than a set number of days (14 by default) to the Trash. Only Rewind's own files are touched.
+- **Preview clips in the overlay.** Your latest clips and screenshots show as thumbnails under the tiles. Click one to play it right in the overlay (Space plays or pauses, ← → step a frame), show it in Finder, or move it to the Trash. Clicking a "saved" notice opens the clip there too.
 - **In-game overlay** (⌥Z). Works over fullscreen apps. Rewind's own windows never appear in your clips.
 - **Global hotkeys** that work while a game has focus, and can be changed in Settings.
 

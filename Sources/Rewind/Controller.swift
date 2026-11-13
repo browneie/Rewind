@@ -111,8 +111,9 @@ final class Controller: ObservableObject {
                 switch result {
                 case .success(let length):
                     await Controller.mixDown(url, enabled: mix)
+                    ClipLibrary.shared.refreshIfShown()
                     Toast.show("Replay saved", "\(formatDuration(length)) · \(url.lastPathComponent)",
-                               icon: "checkmark.circle.fill", tint: .green) { reveal(url) }
+                               icon: "checkmark.circle.fill", tint: .green) { OverlayController.shared.show(preview: url) }
                 case .failure(let error):
                     Toast.error("Couldn't save replay", error)
                 }
@@ -152,8 +153,9 @@ final class Controller: ObservableObject {
                 switch result {
                 case .success(let length):
                     await Controller.mixDown(rec.url, enabled: mix)
+                    ClipLibrary.shared.refreshIfShown()
                     Toast.show("Recording saved", "\(formatDuration(length)) · \(rec.url.lastPathComponent)",
-                               icon: "checkmark.circle.fill", tint: .green) { reveal(rec.url) }
+                               icon: "checkmark.circle.fill", tint: .green) { OverlayController.shared.show(preview: rec.url) }
                 case .failure(let error):
                     Toast.error("Recording failed", error)
                 }
@@ -180,7 +182,8 @@ final class Controller: ObservableObject {
         Task {
             do {
                 try await CaptureEngine.screenshot(displayID: displayID, appID: appID, showCursor: cursor, to: url)
-                Toast.show("Screenshot saved", url.lastPathComponent, icon: "camera.fill", tint: .blue) { reveal(url) }
+                ClipLibrary.shared.refreshIfShown()
+                Toast.show("Screenshot saved", url.lastPathComponent, icon: "camera.fill", tint: .blue) { OverlayController.shared.show(preview: url) }
             } catch {
                 Toast.error("Screenshot failed", error)
             }

@@ -17,7 +17,10 @@ final class OverlayController {
     var isVisible: Bool { panel != nil }
     func toggle() { isVisible ? hide() : show() }
 
-    func show() {
+    /// Shows the overlay; with a URL, opens straight into the preview of that clip.
+    func show(preview url: URL? = nil) {
+        if let url { ClipPreview.shared.open(url: url) }
+        ClipLibrary.shared.refresh()
         guard panel == nil else { return }
         let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main!
         let p = OverlayPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
@@ -35,7 +38,17 @@ final class OverlayController {
         NSAnimationContext.runAnimationGroup { $0.duration = 0.12; p.animator().alphaValue = 1 }
         panel = p
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            let preview = ClipPreview.shared
+            if preview.isTrimming { return e } // the trim bar handles Return (Trim) and Esc (Cancel)
             if e.keyCode == 53 { self?.hide(); return nil } // Esc
+            if preview.item?.isVideo == true, e.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+                switch e.keyCode {
+                case 49: preview.togglePlay(); return nil // Space
+                case 123: preview.step(-1); return nil    // ←
+                case 124: preview.step(1); return nil     // →
+                default: break
+                }
+            }
             return e
         }
     }
@@ -43,6 +56,7 @@ final class OverlayController {
     func hide() {
         guard let p = panel else { return }
         panel = nil
+        ClipPreview.shared.close()
         if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
         NSAnimationContext.runAnimationGroup({ $0.duration = 0.12; p.animator().alphaValue = 0 }) { p.orderOut(nil) }
     }
@@ -51,25 +65,36 @@ final class OverlayController {
 struct OverlayView: View {
     @ObservedObject private var c = Controller.shared
     @ObservedObject private var s = Settings.shared
+    @ObservedObject private var preview = ClipPreview.shared
     let close: () -> Void
+
+    /// Width of the three tiles side by side.
+    private let tilesWidth = Theme.s(150 * 3 + 14 * 2)
 
     var body: some View {
         ZStack {
             Color.black.opacity(Theme.dim).ignoresSafeArea().onTapGesture(perform: close)
-            TimelineView(.periodic(from: .now, by: 1)) { _ in
-                VStack(alignment: .leading, spacing: Theme.s(18)) {
-                    header
-                    HStack(spacing: Theme.s(14)) {
-                        replayTile
-                        recordTile
-                        screenshotTile
+            Group {
+                if let item = preview.item {
+                    ClipPreviewPane(item: item, close: close)
+                } else {
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        VStack(alignment: .leading, spacing: Theme.s(18)) {
+                            header
+                            HStack(spacing: Theme.s(14)) {
+                                replayTile
+                                recordTile
+                                screenshotTile
+                            }
+                            RecentClipsRow(width: tilesWidth)
+                            footer
+                        }
                     }
-                    footer
                 }
-                .padding(Theme.s(22))
-                .fixedSize()
-                .panelSurface(radius: Theme.s(Theme.radius))
             }
+            .padding(Theme.s(22))
+            .fixedSize()
+            .panelSurface(radius: Theme.s(Theme.radius))
         }
         .environment(\.colorScheme, .dark)
         .foregroundStyle(.white)
@@ -275,7 +300,7 @@ private struct RecPill: View {
     }
 }
 
-private struct CircleButton: View {
+struct CircleButton: View {
     let icon: String
     let action: () -> Void
     @State private var hover = false
@@ -290,7 +315,7 @@ private struct CircleButton: View {
     }
 }
 
-private struct Chip: View {
+struct Chip: View {
     let title: String
     let icon: String
     let action: () -> Void

@@ -27,7 +27,10 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
     /// where its biggest window is. Otherwise the chosen display, with Rewind's own windows (overlay,
     /// toasts) left out of the picture.
     static func target(displayID: UInt32, appID: String) async throws -> Target {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        // All windows, not just on-screen ones: Rewind must be in `applications` to be left out of the
+        // picture, and right after launch it may have nothing on screen yet.
+        await MainActor.run { CaptureAnchor.ensure() }
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         let wanted = displayID == 0 ? CGMainDisplayID() : displayID
         guard let chosenDisplay = content.displays.first(where: { $0.displayID == wanted }) ?? content.displays.first else {
             throw RewindError("No display found to capture.")
@@ -52,6 +55,7 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
         }
         let pid = ProcessInfo.processInfo.processIdentifier
         let mine = content.applications.filter { $0.processID == pid }
+        if mine.isEmpty { NSLog("Rewind: couldn't find itself to exclude from capture") }
         return Target(filter: SCContentFilter(display: chosenDisplay, excludingApplications: mine, exceptingWindows: []),
                       appName: nil)
     }
@@ -164,5 +168,28 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
         }
         CGImageDestinationAddImage(dest, image, nil)
         guard CGImageDestinationFinalize(dest) else { throw RewindError("Couldn't write \(url.lastPathComponent).") }
+    }
+}
+
+/// A permanent, invisible 1×1 window. ScreenCaptureKit only lists apps that own a window, and Rewind
+/// has to be listed to be left out of the capture; without this it isn't until the overlay first opens.
+@MainActor
+enum CaptureAnchor {
+    private static var window: NSWindow?
+
+    static func ensure() {
+        guard window == nil else { return }
+        let w = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
+                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        w.isOpaque = false
+        w.backgroundColor = .clear
+        w.alphaValue = 0
+        w.hasShadow = false
+        w.ignoresMouseEvents = true
+        w.isReleasedWhenClosed = false
+        w.level = .normal
+        w.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        w.orderFrontRegardless()
+        window = w
     }
 }
