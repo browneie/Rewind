@@ -28,6 +28,9 @@ final class VideoEncoder: @unchecked Sendable {
         }
         let props: [CFString: Any] = [
             kVTCompressionPropertyKey_RealTime: true,
+            // Real-time still guaranteed; this just keeps the media engine from drawing more power than it needs,
+            // leaving more of the chip's shared power and memory bandwidth for the game.
+            kVTCompressionPropertyKey_MaximizePowerEfficiency: true,
             kVTCompressionPropertyKey_ProfileLevel: codec == .hevc
                 ? kVTProfileLevel_HEVC_Main_AutoLevel : kVTProfileLevel_H264_High_AutoLevel,
             // No B-frames: keeps PTS == DTS so clips can be cut and muxed without re-encoding.

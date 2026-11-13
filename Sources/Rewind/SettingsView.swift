@@ -48,7 +48,7 @@ struct SettingsView: View {
     private var estimate: String {
         let size = CaptureMath.outputSize(native: CaptureMath.nativePixelSize(displayID: s.displayID),
                                           resolution: s.resolution, codec: s.codec)
-        let bitrate = CaptureMath.bitrate(size: size, fps: s.fps, quality: s.quality, codec: s.codec)
+        let bitrate = CaptureMath.bitrate(size: size, fps: s.fps, quality: s.quality, codec: s.codec, customMbps: s.customMbps)
         let audioTracks = (s.systemAudio ? 1 : 0) + (s.microphone ? 1 : 0)
         let bytes = Double(bitrate) / 8 * Double(s.replaySeconds) + Double(audioTracks * 384_000 * s.replaySeconds)
         let mem = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
@@ -89,7 +89,7 @@ struct SettingsView: View {
                 runningApps = AppTarget.pickable()
             }
 
-            Section("Video") {
+            Section {
                 Picker(s.captureAppID.isEmpty ? "Display" : "Fallback display", selection: $s.displayID) {
                     ForEach(displays) { Text($0.name).tag($0.id) }
                 }
@@ -102,10 +102,28 @@ struct SettingsView: View {
                 Picker("Quality", selection: $s.quality) {
                     ForEach(Quality.allCases) { Text($0.label).tag($0) }
                 }
+                if s.quality == .custom {
+                    LabeledContent("Bitrate") {
+                        HStack(spacing: 6) {
+                            TextField("", value: $s.customMbps, format: .number)
+                                .multilineTextAlignment(.trailing).frame(width: 56)
+                                .onSubmit { s.customMbps = min(max(s.customMbps, Quality.customMbpsRange.lowerBound), Quality.customMbpsRange.upperBound) }
+                            Stepper("", value: $s.customMbps, in: Quality.customMbpsRange, step: 1).labelsHidden()
+                            Text("Mbps").foregroundStyle(.secondary)
+                        }
+                    }
+                }
                 Picker("Codec", selection: $s.codec) {
                     ForEach(VideoCodec.allCases) { Text($0.label).tag($0) }
                 }
                 Toggle("Show mouse cursor", isOn: $s.showCursor)
+            } header: {
+                Text("Video")
+            } footer: {
+                if s.fps >= 120 {
+                    Text("120 fps makes macOS copy and convert twice as many frames as 60 fps, which uses more of the GPU your game is using. 60 fps is easier on frame rates.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
 
             Section {

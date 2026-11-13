@@ -22,7 +22,7 @@ enum VideoCodec: String, CaseIterable, Identifiable {
 }
 
 enum Quality: String, CaseIterable, Identifiable {
-    case medium, high, veryHigh, ultra
+    case medium, high, veryHigh, ultra, custom
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -30,6 +30,7 @@ enum Quality: String, CaseIterable, Identifiable {
         case .high: "High"
         case .veryHigh: "Very high"
         case .ultra: "Ultra"
+        case .custom: "Custom bitrate"
         }
     }
     var bitsPerPixel: Double {
@@ -37,9 +38,10 @@ enum Quality: String, CaseIterable, Identifiable {
         case .medium: 0.04
         case .high: 0.07
         case .veryHigh: 0.10
-        case .ultra: 0.15
+        case .ultra, .custom: 0.15
         }
     }
+    static let customMbpsRange = 1...150
 }
 
 enum Resolution: Int, CaseIterable, Identifiable {
@@ -61,6 +63,7 @@ struct CaptureSignature: Equatable {
     var appRunning: Bool
     var fps: Int
     var quality: Quality
+    var customMbps: Int
     var codec: VideoCodec
     var resolution: Resolution
     var showCursor: Bool
@@ -84,7 +87,11 @@ enum CaptureMath {
         return CGSize(width: CGFloat(Int(w) & ~1), height: CGFloat(Int(h) & ~1))
     }
 
-    static func bitrate(size: CGSize, fps: Int, quality: Quality, codec: VideoCodec) -> Int {
+    static func bitrate(size: CGSize, fps: Int, quality: Quality, codec: VideoCodec, customMbps: Int = 0) -> Int {
+        if quality == .custom {
+            let mbps = min(max(customMbps, Quality.customMbpsRange.lowerBound), Quality.customMbpsRange.upperBound)
+            return mbps * 1_000_000
+        }
         var bps = Double(size.width * size.height) * Double(fps) * quality.bitsPerPixel
         if codec == .hevc { bps *= 0.7 }
         return Int(min(max(bps, 2_000_000), 150_000_000))
@@ -214,7 +221,7 @@ final class Settings: ObservableObject {
         static let mixMic = "mixMicrophone"
         static let cleanup = "autoCleanup", cleanupDays = "cleanupDays"
         static let appPrefixes = "appPrefixes"
-        static let playerSize = "playerSize"
+        static let playerSize = "playerSize", customMbps = "customMbps"
         static let layout = "overlayLayout", accent = "accentColor", dim = "overlayDim", showHotkeys = "showHotkeys"
     }
 
@@ -242,6 +249,8 @@ final class Settings: ObservableObject {
     @Published var showHotkeys: Bool { didSet { d.set(showHotkeys, forKey: K.showHotkeys) } }
     /// Width of the Split / Gallery player, before the overlay's scale.
     @Published var playerSize: Double { didSet { d.set(playerSize, forKey: K.playerSize) } }
+    /// Bitrate in Mbps when Quality is "Custom bitrate".
+    @Published var customMbps: Int { didSet { d.set(customMbps, forKey: K.customMbps) } }
 
     var accentColor: Color {
         get { Color(hex: accentHex) }
@@ -256,7 +265,7 @@ final class Settings: ObservableObject {
             K.fps: 60, K.quality: Quality.high.rawValue, K.codec: VideoCodec.h264.rawValue,
             K.resolution: 0, K.cursor: true, K.sysAudio: true, K.mic: false, K.mixMic: true,
             K.replay: 120, K.startReplay: true, K.cleanup: false, K.cleanupDays: 14,
-            K.layout: OverlayLayout.panes.rawValue, K.accent: Int(Theme.defaultAccent), K.dim: 0.6, K.showHotkeys: true, K.playerSize: Theme.defaultPlayerSize,
+            K.layout: OverlayLayout.panes.rawValue, K.accent: Int(Theme.defaultAccent), K.dim: 0.6, K.showHotkeys: true, K.playerSize: Theme.defaultPlayerSize, K.customMbps: 20,
         ])
         displayID = UInt32(clamping: d.integer(forKey: K.display))
         captureAppID = d.string(forKey: K.appID) ?? ""
@@ -278,6 +287,7 @@ final class Settings: ObservableObject {
         accentHex = UInt32(clamping: d.integer(forKey: K.accent)) & 0xFFFFFF
         overlayDim = min(max(d.double(forKey: K.dim), 0), 0.9)
         showHotkeys = d.bool(forKey: K.showHotkeys)
+        customMbps = min(max(d.integer(forKey: K.customMbps), Quality.customMbpsRange.lowerBound), Quality.customMbpsRange.upperBound)
         playerSize = min(max(d.double(forKey: K.playerSize), Theme.playerSizeRange.lowerBound), Theme.playerSizeRange.upperBound)
         outputDirectory = d.string(forKey: K.output).map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0].appendingPathComponent("Rewind")
@@ -312,7 +322,7 @@ final class Settings: ObservableObject {
 
     var captureSignature: CaptureSignature {
         CaptureSignature(displayID: displayID, appID: captureAppID, appName: captureAppName,
-                         appRunning: !captureAppID.isEmpty && AppTarget.isRunning(captureAppID), fps: fps, quality: quality, codec: codec, resolution: resolution,
+                         appRunning: !captureAppID.isEmpty && AppTarget.isRunning(captureAppID), fps: fps, quality: quality, customMbps: customMbps, codec: codec, resolution: resolution,
                          showCursor: showCursor, systemAudio: systemAudio, microphone: microphone)
     }
 }
