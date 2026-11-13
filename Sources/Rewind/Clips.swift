@@ -11,7 +11,7 @@ struct ClipItem: Identifiable, Hashable {
     let date: Date
     var id: URL { url }
 
-    /// "ROBLOX" for clips named after the captured app.
+    /// "Roblox" for clips named after the captured app.
     var appName: String? { Cleanup.appPrefix(of: url.lastPathComponent) }
 
     var kind: Kind {

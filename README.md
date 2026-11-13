@@ -11,7 +11,7 @@ A ShadowPlay-style screen recorder for macOS. Rewind keeps the last few minutes 
 - **Instant Replay.** Keeps the last 15 seconds to 20 minutes ready to save with one hotkey. Clips are written without re-encoding, so saving is near-instant.
 - **Recording.** Start/stop a normal recording at any time; it runs alongside Instant Replay.
 - **Screenshots.** Full-resolution PNG of the display.
-- **Capture one app.** Choose an app (a game, say) in Settings, and only its windows and sound are recorded, so notifications and other apps stay out of your clips. If the app isn't running, Rewind records the whole display and switches over automatically when the app opens. Clips of that app are named after it, like `ROBLOX 2026-11-13 at 16.53.58.mp4`.
+- **Capture one app.** Choose an app (a game, say) in Settings, and only its windows and sound are recorded, so notifications and other apps stay out of your clips. If the app isn't running, Rewind records the whole display and switches over automatically when the app opens. Clips of that app are named after it, like `Roblox 2026-11-13 at 16.53.58.mp4`.
 - **Hardware encoding.** Captures with ScreenCaptureKit and encodes H.264 or HEVC on the Apple media engine, so it's light on the CPU and GPU while you play.
 - **Audio.** System audio and/or microphone. By default your mic is mixed into the main track so clips play correctly everywhere; turn that off to keep them as separate tracks for editing.
 - **Auto-cleanup** (optional, off by default). Moves clips and screenshots older than a set number of days (14 by default) to the Trash. Only Rewind's own files are touched.

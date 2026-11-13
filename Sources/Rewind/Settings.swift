@@ -231,7 +231,7 @@ final class Settings: ObservableObject {
     @Published var outputDirectory: URL { didSet { d.set(outputDirectory.path, forKey: K.output) } }
     @Published var autoCleanup: Bool { didSet { d.set(autoCleanup, forKey: K.cleanup) } }
     @Published var cleanupDays: Int { didSet { d.set(cleanupDays, forKey: K.cleanupDays) } }
-    /// App names used to name clips ("ROBLOX"), so cleanup and Recent clips still recognise those files.
+    /// App names used to name clips ("Roblox"), so cleanup and Recent clips still recognise those files.
     @Published private(set) var appPrefixes: [String] { didSet { d.set(appPrefixes, forKey: K.appPrefixes) } }
     @Published private(set) var hotkeys: [String: Hotkey] {
         didSet { d.set(try? JSONEncoder().encode(hotkeys), forKey: K.hotkeys) }
@@ -274,12 +274,12 @@ final class Settings: ObservableObject {
     func resetHotkeys() { hotkeys = [:] }
     func clearHotkey(_ a: HotkeyAction) { hotkeys[a.rawValue] = Hotkey.none }
 
-    /// File name prefix for clips of an app: its name in capitals ("ROBLOX"), safe for a file name.
+    /// File name prefix for clips of an app: its name as the app spells it ("Roblox"), safe for a file name.
     func clipPrefix(forApp name: String) -> String? {
-        let cleaned = name.uppercased()
+        let cleaned = name
             .replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
-        guard !cleaned.isEmpty, !Cleanup.builtInPrefixes.contains(where: { $0.uppercased() == cleaned }) else { return nil }
+        guard !cleaned.isEmpty, !Cleanup.builtInPrefixes.contains(where: { $0.caseInsensitiveCompare(cleaned) == .orderedSame }) else { return nil }
         if !appPrefixes.contains(cleaned) { appPrefixes.append(cleaned) }
         return cleaned
     }

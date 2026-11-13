@@ -24,7 +24,7 @@ enum Cleanup {
         s.range(of: #"^\d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2}"#, options: .regularExpression) != nil
     }
 
-    /// "ROBLOX" for "ROBLOX 2026-11-13 at 16.53.58.mp4"; nil for built-in names or no date stamp.
+    /// "Roblox" for "Roblox 2026-11-13 at 16.53.58.mp4"; nil for built-in names or no date stamp.
     static func appPrefix(of name: String) -> String? {
         guard !builtInPrefixes.contains(where: { name.hasPrefix($0 + " ") }),
               let r = name.range(of: #" \d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2}"#, options: .regularExpression),

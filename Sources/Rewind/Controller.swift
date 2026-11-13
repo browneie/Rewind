@@ -344,7 +344,7 @@ final class Controller: ObservableObject {
         }
     }
 
-    /// "ROBLOX" while capturing just that app, otherwise the usual "Replay" / "Recording" / "Screenshot".
+    /// "Roblox" while capturing just that app, otherwise the usual "Replay" / "Recording" / "Screenshot".
     private func namePrefix(_ fallback: String) -> String {
         let app: String?
         if isCapturing {
