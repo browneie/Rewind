@@ -13,9 +13,11 @@ A ShadowPlay-style screen recorder for macOS. Rewind keeps the last few minutes 
 - **Instant Replay.** Keeps the last 15 seconds to 20 minutes ready to save with one hotkey. Clips are written without re-encoding, so saving is near-instant.
 - **Recording.** Start/stop a normal recording at any time; it runs alongside Instant Replay.
 - **Screenshots.** Full-resolution PNG of the display.
-- **Capture one app.** Choose an app (a game, say) in Settings, and only its windows and sound are recorded, so notifications and other apps stay out of your clips. If the app isn't running, Rewind records the whole display and switches over automatically when the app opens.
+- **Capture one app.** Choose an app (a game, say) in Settings, and only its windows and sound are recorded, so notifications and other apps stay out of your clips. If the app isn't running, Rewind records the whole display and switches over automatically when the app opens. Clips of that app are named after it, like `Roblox 2026-11-13 at 16.53.58.mp4`.
 - **Hardware encoding.** Captures with ScreenCaptureKit and encodes H.264 or HEVC on the Apple media engine, so it's light on the CPU and GPU while you play.
 - **Audio.** System audio and/or microphone. By default your mic is mixed into the main track so clips play correctly everywhere; turn that off to keep them as separate tracks for editing.
+- **Auto-cleanup** (optional, off by default). Moves clips and screenshots older than a set number of days (14 by default) to the Trash. Only Rewind's own files are touched.
+- **Preview clips in the overlay.** Your latest clips and screenshots show as thumbnails under the tiles. Click one to play it right in the overlay (Space plays or pauses, ← → step a frame), show it in Finder, or move it to the Trash. Clicking a "saved" notice opens the clip there too.
 - **In-game overlay** (⌥Z). Works over fullscreen apps. Rewind's own windows never appear in your clips.
 - **Global hotkeys** that work while a game has focus, and can be changed in Settings.
 
@@ -35,6 +37,8 @@ A ShadowPlay-style screen recorder for macOS. Rewind keeps the last few minutes 
 
 On a Mac keyboard you may need to hold **fn** for the F-keys.
 
+To change a hotkey, click it in Settings and press the new keys. Press **Esc** instead to remove it (it shows "No bind set").
+
 In the overlay, **left-click** Instant Replay to save a clip and **right-click** it to turn replay off. Record and Screenshot work with either mouse button.
 
 ## Install
@@ -52,7 +56,7 @@ Clips are saved to `~/Movies/Rewind` by default.
 
 <img src="docs/settings.png" width="420" alt="Settings window">
 
-Choose what to capture (the whole display or one app), the display, resolution, frame rate (30/60/120), quality, codec, replay length, audio sources and whether to mix the mic in, save folder, hotkeys, and whether Rewind opens at login. The Settings window shows how much RAM the replay buffer will use.
+Choose what to capture (the whole display or one app), the display, resolution, frame rate (30/60/120), quality, codec, replay length, audio sources and whether to mix the mic in, save folder, auto-cleanup of old clips, hotkeys, and whether Rewind opens at login. The Settings window shows how much RAM the replay buffer will use.
 
 ## Build from source
 
@@ -69,12 +73,6 @@ To check the capture → encode → replay → MP4 pipeline without screen permi
 
 ```bash
 .build/release/Rewind --selftest /tmp/rewind-test
-```
-
-To redraw the app icon after changing [`scripts/make-icon.swift`](scripts/make-icon.swift):
-
-```bash
-swift scripts/make-icon.swift && iconutil -c icns build/AppIcon.iconset -o Resources/AppIcon.icns
 ```
 
 ### Changing the look

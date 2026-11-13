@@ -76,8 +76,9 @@ final class Controller: ObservableObject {
         reconcile { [weak self] ok in
             guard let self, ok, self.replayActive else { return }
             let what = self.engine.capturedApp.map { "\($0) · " } ?? ""
+            let hint = self.settings.hotkeyHint(.saveReplay, "to save")
             Toast.show("Instant Replay is on",
-                       "\(what)Keeping the last \(formatDuration(Double(self.settings.replaySeconds))) · \(self.settings.hotkey(.saveReplay).display) to save",
+                       "\(what)Keeping the last \(formatDuration(Double(self.settings.replaySeconds)))\(hint.isEmpty ? "" : " · " + hint)",
                        icon: "arrow.counterclockwise.circle.fill", tint: .green)
         }
     }
@@ -93,7 +94,8 @@ final class Controller: ObservableObject {
 
     func saveReplay() {
         guard replayActive else {
-            Toast.show("Instant Replay is off", "Press \(settings.hotkey(.toggleReplay).display) to turn it on",
+            let hint = settings.hotkeyHint(.toggleReplay, "to turn it on")
+            Toast.show("Instant Replay is off", hint.isEmpty ? "Turn it on from the overlay or the menu bar." : "Press " + hint,
                        icon: "exclamationmark.triangle.fill", tint: .orange)
             return
         }
@@ -102,15 +104,16 @@ final class Controller: ObservableObject {
             Toast.show("Nothing to save yet", "The replay buffer is still empty.", icon: "hourglass", tint: .orange)
             return
         }
-        guard let url = makeOutputURL(prefix: "Replay", ext: "mp4") else { return }
+        guard let url = makeOutputURL(prefix: namePrefix("Replay"), ext: "mp4") else { return }
         let mix = settings.mixMicrophone
         ClipWriter.write(snap, to: url) { result in
             Task { @MainActor in
                 switch result {
                 case .success(let length):
                     await Controller.mixDown(url, enabled: mix)
+                    ClipLibrary.shared.refreshIfShown()
                     Toast.show("Replay saved", "\(formatDuration(length)) · \(url.lastPathComponent)",
-                               icon: "checkmark.circle.fill", tint: .green) { reveal(url) }
+                               icon: "checkmark.circle.fill", tint: .green) { OverlayController.shared.show(preview: url) }
                 case .failure(let error):
                     Toast.error("Couldn't save replay", error)
                 }
@@ -119,7 +122,7 @@ final class Controller: ObservableObject {
     }
 
     func startRecording() {
-        guard !recording, let url = makeOutputURL(prefix: "Recording", ext: "mp4") else { return }
+        guard !recording, let url = makeOutputURL(prefix: namePrefix("Recording"), ext: "mp4") else { return }
         var tracks: Set<AudioTrack> = []
         if settings.systemAudio { tracks.insert(.system) }
         if settings.microphone { tracks.insert(.mic) }
@@ -133,7 +136,8 @@ final class Controller: ObservableObject {
         reconcile { [weak self] ok in
             guard let self, ok, self.recording else { return }
             self.engine.forceKeyframe()
-            Toast.show("Recording started", "\(self.settings.hotkey(.toggleRecording).display) to stop",
+            let hint = self.settings.hotkeyHint(.toggleRecording, "to stop")
+            Toast.show("Recording started", hint.isEmpty ? nil : hint,
                        icon: "record.circle.fill", tint: .red)
         }
     }
@@ -149,8 +153,9 @@ final class Controller: ObservableObject {
                 switch result {
                 case .success(let length):
                     await Controller.mixDown(rec.url, enabled: mix)
+                    ClipLibrary.shared.refreshIfShown()
                     Toast.show("Recording saved", "\(formatDuration(length)) · \(rec.url.lastPathComponent)",
-                               icon: "checkmark.circle.fill", tint: .green) { reveal(rec.url) }
+                               icon: "checkmark.circle.fill", tint: .green) { OverlayController.shared.show(preview: rec.url) }
                 case .failure(let error):
                     Toast.error("Recording failed", error)
                 }
@@ -172,12 +177,13 @@ final class Controller: ObservableObject {
     }
 
     func screenshot() {
-        guard let url = makeOutputURL(prefix: "Screenshot", ext: "png") else { return }
+        guard let url = makeOutputURL(prefix: namePrefix("Screenshot"), ext: "png") else { return }
         let displayID = settings.displayID, cursor = settings.showCursor, appID = settings.captureAppID
         Task {
             do {
                 try await CaptureEngine.screenshot(displayID: displayID, appID: appID, showCursor: cursor, to: url)
-                Toast.show("Screenshot saved", url.lastPathComponent, icon: "camera.fill", tint: .blue) { reveal(url) }
+                ClipLibrary.shared.refreshIfShown()
+                Toast.show("Screenshot saved", url.lastPathComponent, icon: "camera.fill", tint: .blue) { OverlayController.shared.show(preview: url) }
             } catch {
                 Toast.error("Screenshot failed", error)
             }
@@ -191,7 +197,40 @@ final class Controller: ObservableObject {
 
     func settingsChanged() {
         router.replay.duration = Double(settings.replaySeconds)
+        let cleanupSig = settings.autoCleanup ? "\(settings.cleanupDays)|\(settings.outputDirectory.path)" : ""
+        if cleanupSig != lastCleanupSig { lastCleanupSig = cleanupSig; cleanUpOldClips() }
         if isCapturing, runningSignature != settings.captureSignature { reconcile() }
+    }
+
+    // MARK: Auto-cleanup
+
+    private var lastCleanupSig = ""
+    private var cleanupTimer: Timer?
+
+    /// Checks now, then every hour while Rewind runs.
+    func startCleanupSchedule() {
+        lastCleanupSig = settings.autoCleanup ? "\(settings.cleanupDays)|\(settings.outputDirectory.path)" : ""
+        cleanUpOldClips()
+        cleanupTimer?.invalidate()
+        cleanupTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { _ in
+            MainActor.assumeIsolated { Controller.shared.cleanUpOldClips() }
+        }
+    }
+
+    func cleanUpOldClips() {
+        guard settings.autoCleanup else { return }
+        let dir = settings.outputDirectory, days = settings.cleanupDays, prefixes = settings.appPrefixes
+        let keep: Set<URL> = router.recorder.map { [$0.url] } ?? []
+        Task.detached(priority: .utility) {
+            let r = Cleanup.run(in: dir, olderThan: days, keep: keep, appPrefixes: prefixes)
+            guard r.count > 0 else { return }
+            await MainActor.run {
+                let size = ByteCountFormatter.string(fromByteCount: r.bytes, countStyle: .file)
+                Toast.show("Moved \(r.count) old \(r.count == 1 ? "file" : "files") to the Trash",
+                           "Older than \(days) \(days == 1 ? "day" : "days") · \(size) freed",
+                           icon: "trash.fill", tint: .gray)
+            }
+        }
     }
 
     var bufferedSeconds: Double { router.replay.bufferedSeconds }
@@ -303,6 +342,19 @@ final class Controller: ObservableObject {
         } else {
             Toast.error("Couldn't start capture", error)
         }
+    }
+
+    /// "Roblox" while capturing just that app, otherwise the usual "Replay" / "Recording" / "Screenshot".
+    private func namePrefix(_ fallback: String) -> String {
+        let app: String?
+        if isCapturing {
+            app = engine.capturedApp // nil when it fell back to the whole display
+        } else if !settings.captureAppID.isEmpty, AppTarget.isRunning(settings.captureAppID), !settings.captureAppName.isEmpty {
+            app = settings.captureAppName // capture is about to start on it
+        } else {
+            app = nil
+        }
+        return app.flatMap { settings.clipPrefix(forApp: $0) } ?? fallback
     }
 
     private func makeOutputURL(prefix: String, ext: String) -> URL? {

@@ -90,7 +90,78 @@ enum SelfTest {
             print("after mixdown:", terminator: " ")
             if !inspect(url, audioTracks: 1) { failed = true }
         }
+        if !testTrim(recURL) { failed = true }
+        if !testCleanup(dir: dir) { failed = true }
         return failed ? 1 : 0
+    }
+
+    /// Cutting 1.2s–3.7s out of the 5s recording should give a 2.5s clip, without re-encoding.
+    private static func testTrim(_ source: URL) -> Bool {
+        let dest = ClipTrimmer.outputURL(for: source)
+        try? FileManager.default.removeItem(at: dest)
+        let range = CMTimeRange(start: CMTime(seconds: 1.2, preferredTimescale: 600),
+                                end: CMTime(seconds: 3.7, preferredTimescale: 600))
+        let sem = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var trimError: Error?
+        nonisolated(unsafe) var length = 0.0
+        Task {
+            do {
+                try await ClipTrimmer.trim(source, range: range, to: dest)
+                length = try await AVURLAsset(url: dest).load(.duration).seconds
+            } catch { trimError = error }
+            sem.signal()
+        }
+        sem.wait()
+        if let trimError { print("FAIL trim: \(trimError)"); return false }
+        print(String(format: "trimmed to %.2fs (wanted 2.50s) → ", length), terminator: "")
+        var ok = inspect(dest, audioTracks: 1)
+        if abs(length - 2.5) > 0.1 { print("FAIL trim length"); ok = false }
+        try? FileManager.default.removeItem(at: dest)
+        return ok
+    }
+
+    /// Only Rewind's own files older than the limit go; everything else stays.
+    private static func testCleanup(dir: URL) -> Bool {
+        let fm = FileManager.default
+        let d = dir.appendingPathComponent("cleanup-test")
+        try? fm.removeItem(at: d)
+        try? fm.createDirectory(at: d, withIntermediateDirectories: true)
+        let now = Date()
+        let files: [(String, Double, Bool)] = [ // name, age in days, should be removed
+            ("Replay 2026-01-01 at 10.00.00.mp4", 20, true),
+            ("Recording 2026-01-01 at 10.00.00.mp4", 15, true),
+            ("Screenshot 2026-01-01 at 10.00.00.png", 30, true),
+            ("Replay 2026-01-10 at 10.00.00.mp4", 13, false),
+            ("Recording in progress.mp4", 40, false), // passed as `keep`
+            ("Holiday video.mp4", 99, false),
+            ("Replay notes.txt", 99, false),
+            (".mixing-ABC.mp4", 99, false),
+            ("Roblox 2026-01-01 at 10.00.00 (trimmed).mp4", 20, true), // app name Rewind used
+            ("Roblox notes.mp4", 99, false),                         // no date stamp
+            ("Minecraft 2026-01-01 at 10.00.00.mp4", 99, false),     // app name Rewind never used
+        ]
+        for (name, age, _) in files {
+            let url = d.appendingPathComponent(name)
+            fm.createFile(atPath: url.path, contents: Data(count: 1000))
+            let date = now.addingTimeInterval(-age * 86_400)
+            try? fm.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: url.path)
+        }
+        let r = Cleanup.run(in: d, olderThan: 14, now: now,
+                            keep: [d.appendingPathComponent("Recording in progress.mp4")], appPrefixes: ["Roblox"],
+                            remove: { try fm.removeItem(at: $0) })
+        var ok = r.count == 4 && r.bytes == 4000
+        let names: [(String, String?)] = [("Roblox 2026-11-13 at 16.53.58.mp4", "Roblox"),
+                                          ("Sea of Thieves 2026-11-13 at 16.53.58 (2).png", "Sea of Thieves"),
+                                          ("Replay 2026-11-13 at 16.53.58.mp4", nil), ("Holiday.mp4", nil)]
+        for (name, want) in names where Cleanup.appPrefix(of: name) != want {
+            print("FAIL app name of \(name): \(Cleanup.appPrefix(of: name) ?? "nil")"); ok = false
+        }
+        for (name, _, gone) in files where fm.fileExists(atPath: d.appendingPathComponent(name).path) == gone {
+            print("FAIL cleanup: \(name) should \(gone ? "be removed" : "stay")"); ok = false
+        }
+        print("cleanup: removed \(r.count) of \(files.count) files (\(r.bytes) bytes)\(ok ? "" : " FAIL")")
+        try? fm.removeItem(at: d)
+        return ok
     }
 
     private static func fill(_ pb: CVPixelBuffer, luma: UInt8) {

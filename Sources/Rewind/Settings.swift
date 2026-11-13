@@ -107,6 +107,10 @@ struct Hotkey: Codable, Equatable {
     var modifiers: UInt32 // Carbon modifier mask
     var display: String
 
+    /// An action with no shortcut. Saved like a normal hotkey so it survives restarts.
+    static let none = Hotkey(keyCode: .max, modifiers: 0, display: "No bind set")
+    var isSet: Bool { keyCode != Hotkey.none.keyCode }
+
     static let functionKeys: [UInt32: Int] = [
         0x7A: 1, 0x78: 2, 0x63: 3, 0x76: 4, 0x60: 5, 0x61: 6, 0x62: 7, 0x64: 8, 0x65: 9, 0x6D: 10,
         0x67: 11, 0x6F: 12, 0x69: 13, 0x6B: 14, 0x71: 15, 0x6A: 16, 0x40: 17, 0x4F: 18, 0x50: 19, 0x5A: 20,
@@ -151,6 +155,7 @@ struct Hotkey: Codable, Equatable {
 
     /// Key equivalent + mask for showing the shortcut in an NSMenu.
     var menuKeyEquivalent: (String, NSEvent.ModifierFlags) {
+        guard isSet else { return ("", []) }
         var flags: NSEvent.ModifierFlags = []
         if modifiers & UInt32(controlKey) != 0 { flags.insert(.control) }
         if modifiers & UInt32(optionKey) != 0 { flags.insert(.option) }
@@ -206,6 +211,8 @@ final class Settings: ObservableObject {
         static let hotkeys = "hotkeys"
         static let appID = "captureAppID", appName = "captureAppName"
         static let mixMic = "mixMicrophone"
+        static let cleanup = "autoCleanup", cleanupDays = "cleanupDays"
+        static let appPrefixes = "appPrefixes"
     }
 
     @Published var displayID: UInt32 { didSet { d.set(Int(displayID), forKey: K.display) } }
@@ -222,6 +229,10 @@ final class Settings: ObservableObject {
     @Published var replaySeconds: Int { didSet { d.set(replaySeconds, forKey: K.replay) } }
     @Published var startReplayOnLaunch: Bool { didSet { d.set(startReplayOnLaunch, forKey: K.startReplay) } }
     @Published var outputDirectory: URL { didSet { d.set(outputDirectory.path, forKey: K.output) } }
+    @Published var autoCleanup: Bool { didSet { d.set(autoCleanup, forKey: K.cleanup) } }
+    @Published var cleanupDays: Int { didSet { d.set(cleanupDays, forKey: K.cleanupDays) } }
+    /// App names used to name clips ("Roblox"), so cleanup and Recent clips still recognise those files.
+    @Published private(set) var appPrefixes: [String] { didSet { d.set(appPrefixes, forKey: K.appPrefixes) } }
     @Published private(set) var hotkeys: [String: Hotkey] {
         didSet { d.set(try? JSONEncoder().encode(hotkeys), forKey: K.hotkeys) }
     }
@@ -230,7 +241,7 @@ final class Settings: ObservableObject {
         d.register(defaults: [
             K.fps: 60, K.quality: Quality.high.rawValue, K.codec: VideoCodec.h264.rawValue,
             K.resolution: 0, K.cursor: true, K.sysAudio: true, K.mic: false, K.mixMic: true,
-            K.replay: 120, K.startReplay: true,
+            K.replay: 120, K.startReplay: true, K.cleanup: false, K.cleanupDays: 14,
         ])
         displayID = UInt32(clamping: d.integer(forKey: K.display))
         captureAppID = d.string(forKey: K.appID) ?? ""
@@ -245,6 +256,9 @@ final class Settings: ObservableObject {
         mixMicrophone = d.bool(forKey: K.mixMic)
         replaySeconds = d.integer(forKey: K.replay)
         startReplayOnLaunch = d.bool(forKey: K.startReplay)
+        autoCleanup = d.bool(forKey: K.cleanup)
+        cleanupDays = max(1, d.integer(forKey: K.cleanupDays))
+        appPrefixes = d.stringArray(forKey: K.appPrefixes) ?? []
         outputDirectory = d.string(forKey: K.output).map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0].appendingPathComponent("Rewind")
         if let data = d.data(forKey: K.hotkeys),
@@ -258,6 +272,23 @@ final class Settings: ObservableObject {
     func hotkey(_ a: HotkeyAction) -> Hotkey { hotkeys[a.rawValue] ?? a.defaultHotkey }
     func setHotkey(_ h: Hotkey, for a: HotkeyAction) { hotkeys[a.rawValue] = h }
     func resetHotkeys() { hotkeys = [:] }
+    func clearHotkey(_ a: HotkeyAction) { hotkeys[a.rawValue] = Hotkey.none }
+
+    /// File name prefix for clips of an app: its name as the app spells it ("Roblox"), safe for a file name.
+    func clipPrefix(forApp name: String) -> String? {
+        let cleaned = name
+            .replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
+        guard !cleaned.isEmpty, !Cleanup.builtInPrefixes.contains(where: { $0.caseInsensitiveCompare(cleaned) == .orderedSame }) else { return nil }
+        if !appPrefixes.contains(cleaned) { appPrefixes.append(cleaned) }
+        return cleaned
+    }
+
+    /// "⌥F10 to save", or "" when that action has no shortcut.
+    func hotkeyHint(_ a: HotkeyAction, _ what: String) -> String {
+        let h = hotkey(a)
+        return h.isSet ? "\(h.display) \(what)" : ""
+    }
 
     var captureSignature: CaptureSignature {
         CaptureSignature(displayID: displayID, appID: captureAppID, appName: captureAppName,
