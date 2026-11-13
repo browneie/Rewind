@@ -5,16 +5,21 @@ import SwiftUI
 
 /// A saved replay, recording or screenshot in the clips folder.
 struct ClipItem: Identifiable, Hashable {
-    enum Kind { case replay, recording, screenshot }
+    enum Kind { case replay, recording, screenshot, app }
 
     let url: URL
     let date: Date
     var id: URL { url }
 
+    /// "ROBLOX" for clips named after the captured app.
+    var appName: String? { Cleanup.appPrefix(of: url.lastPathComponent) }
+
     var kind: Kind {
         let name = url.lastPathComponent
-        if name.hasPrefix("Screenshot ") { return .screenshot }
-        return name.hasPrefix("Recording ") ? .recording : .replay
+        if name.hasPrefix("Screenshot ") || url.pathExtension.lowercased() == "png" { return .screenshot }
+        if name.hasPrefix("Recording ") { return .recording }
+        if name.hasPrefix("Replay ") { return .replay }
+        return .app
     }
     var isVideo: Bool { kind != .screenshot }
 
@@ -22,7 +27,8 @@ struct ClipItem: Identifiable, Hashable {
         switch kind {
         case .replay: "Replay"
         case .recording: "Recording"
-        case .screenshot: "Screenshot"
+        case .screenshot: appName.map { "\($0) screenshot" } ?? "Screenshot"
+        case .app: appName ?? "Clip"
         }
     }
     var icon: String {
@@ -30,6 +36,7 @@ struct ClipItem: Identifiable, Hashable {
         case .replay: "arrow.counterclockwise"
         case .recording: "record.circle"
         case .screenshot: "camera"
+        case .app: "gamecontroller.fill"
         }
     }
     var tint: Color {
@@ -37,6 +44,7 @@ struct ClipItem: Identifiable, Hashable {
         case .replay: Theme.replay
         case .recording: Theme.record
         case .screenshot: Theme.screenshot
+        case .app: Theme.accent
         }
     }
 }
@@ -59,10 +67,11 @@ final class ClipLibrary: ObservableObject {
     func refresh() {
         let dir = Settings.shared.outputDirectory
         let busy = Controller.shared.router.recorder?.url // still being written
+        let prefixes = Settings.shared.appPrefixes
         scan?.cancel()
         scan = Task {
             let found = await Task.detached(priority: .userInitiated) {
-                ClipLibrary.recent(in: dir, excluding: busy)
+                ClipLibrary.recent(in: dir, excluding: busy, appPrefixes: prefixes)
             }.value
             guard !Task.isCancelled else { return }
             items = found
@@ -73,13 +82,13 @@ final class ClipLibrary: ObservableObject {
         }
     }
 
-    nonisolated static func recent(in dir: URL, excluding busy: URL?) -> [ClipItem] {
+    nonisolated static func recent(in dir: URL, excluding busy: URL?, appPrefixes: [String] = []) -> [ClipItem] {
         let keys: [URLResourceKey] = [.creationDateKey, .contentModificationDateKey, .isRegularFileKey]
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { return [] }
         let skip = busy?.standardizedFileURL
         return files.compactMap { url -> ClipItem? in
-            guard Cleanup.isRewindFile(url.lastPathComponent), url.standardizedFileURL != skip,
+            guard Cleanup.isRewindFile(url.lastPathComponent, appPrefixes: appPrefixes), url.standardizedFileURL != skip,
                   let v = try? url.resourceValues(forKeys: Set(keys)), v.isRegularFile == true else { return nil }
             return ClipItem(url: url, date: v.creationDate ?? v.contentModificationDate ?? .distantPast)
         }

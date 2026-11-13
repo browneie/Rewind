@@ -212,6 +212,7 @@ final class Settings: ObservableObject {
         static let appID = "captureAppID", appName = "captureAppName"
         static let mixMic = "mixMicrophone"
         static let cleanup = "autoCleanup", cleanupDays = "cleanupDays"
+        static let appPrefixes = "appPrefixes"
     }
 
     @Published var displayID: UInt32 { didSet { d.set(Int(displayID), forKey: K.display) } }
@@ -230,6 +231,8 @@ final class Settings: ObservableObject {
     @Published var outputDirectory: URL { didSet { d.set(outputDirectory.path, forKey: K.output) } }
     @Published var autoCleanup: Bool { didSet { d.set(autoCleanup, forKey: K.cleanup) } }
     @Published var cleanupDays: Int { didSet { d.set(cleanupDays, forKey: K.cleanupDays) } }
+    /// App names used to name clips ("ROBLOX"), so cleanup and Recent clips still recognise those files.
+    @Published private(set) var appPrefixes: [String] { didSet { d.set(appPrefixes, forKey: K.appPrefixes) } }
     @Published private(set) var hotkeys: [String: Hotkey] {
         didSet { d.set(try? JSONEncoder().encode(hotkeys), forKey: K.hotkeys) }
     }
@@ -255,6 +258,7 @@ final class Settings: ObservableObject {
         startReplayOnLaunch = d.bool(forKey: K.startReplay)
         autoCleanup = d.bool(forKey: K.cleanup)
         cleanupDays = max(1, d.integer(forKey: K.cleanupDays))
+        appPrefixes = d.stringArray(forKey: K.appPrefixes) ?? []
         outputDirectory = d.string(forKey: K.output).map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0].appendingPathComponent("Rewind")
         if let data = d.data(forKey: K.hotkeys),
@@ -269,6 +273,16 @@ final class Settings: ObservableObject {
     func setHotkey(_ h: Hotkey, for a: HotkeyAction) { hotkeys[a.rawValue] = h }
     func resetHotkeys() { hotkeys = [:] }
     func clearHotkey(_ a: HotkeyAction) { hotkeys[a.rawValue] = Hotkey.none }
+
+    /// File name prefix for clips of an app: its name in capitals ("ROBLOX"), safe for a file name.
+    func clipPrefix(forApp name: String) -> String? {
+        let cleaned = name.uppercased()
+            .replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
+        guard !cleaned.isEmpty, !Cleanup.builtInPrefixes.contains(where: { $0.uppercased() == cleaned }) else { return nil }
+        if !appPrefixes.contains(cleaned) { appPrefixes.append(cleaned) }
+        return cleaned
+    }
 
     /// "⌥F10 to save", or "" when that action has no shortcut.
     func hotkeyHint(_ a: HotkeyAction, _ what: String) -> String {

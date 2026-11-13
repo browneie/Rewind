@@ -104,7 +104,7 @@ final class Controller: ObservableObject {
             Toast.show("Nothing to save yet", "The replay buffer is still empty.", icon: "hourglass", tint: .orange)
             return
         }
-        guard let url = makeOutputURL(prefix: "Replay", ext: "mp4") else { return }
+        guard let url = makeOutputURL(prefix: namePrefix("Replay"), ext: "mp4") else { return }
         let mix = settings.mixMicrophone
         ClipWriter.write(snap, to: url) { result in
             Task { @MainActor in
@@ -122,7 +122,7 @@ final class Controller: ObservableObject {
     }
 
     func startRecording() {
-        guard !recording, let url = makeOutputURL(prefix: "Recording", ext: "mp4") else { return }
+        guard !recording, let url = makeOutputURL(prefix: namePrefix("Recording"), ext: "mp4") else { return }
         var tracks: Set<AudioTrack> = []
         if settings.systemAudio { tracks.insert(.system) }
         if settings.microphone { tracks.insert(.mic) }
@@ -177,7 +177,7 @@ final class Controller: ObservableObject {
     }
 
     func screenshot() {
-        guard let url = makeOutputURL(prefix: "Screenshot", ext: "png") else { return }
+        guard let url = makeOutputURL(prefix: namePrefix("Screenshot"), ext: "png") else { return }
         let displayID = settings.displayID, cursor = settings.showCursor, appID = settings.captureAppID
         Task {
             do {
@@ -219,10 +219,10 @@ final class Controller: ObservableObject {
 
     func cleanUpOldClips() {
         guard settings.autoCleanup else { return }
-        let dir = settings.outputDirectory, days = settings.cleanupDays
+        let dir = settings.outputDirectory, days = settings.cleanupDays, prefixes = settings.appPrefixes
         let keep: Set<URL> = router.recorder.map { [$0.url] } ?? []
         Task.detached(priority: .utility) {
-            let r = Cleanup.run(in: dir, olderThan: days, keep: keep)
+            let r = Cleanup.run(in: dir, olderThan: days, keep: keep, appPrefixes: prefixes)
             guard r.count > 0 else { return }
             await MainActor.run {
                 let size = ByteCountFormatter.string(fromByteCount: r.bytes, countStyle: .file)
@@ -342,6 +342,19 @@ final class Controller: ObservableObject {
         } else {
             Toast.error("Couldn't start capture", error)
         }
+    }
+
+    /// "ROBLOX" while capturing just that app, otherwise the usual "Replay" / "Recording" / "Screenshot".
+    private func namePrefix(_ fallback: String) -> String {
+        let app: String?
+        if isCapturing {
+            app = engine.capturedApp // nil when it fell back to the whole display
+        } else if !settings.captureAppID.isEmpty, AppTarget.isRunning(settings.captureAppID), !settings.captureAppName.isEmpty {
+            app = settings.captureAppName // capture is about to start on it
+        } else {
+            app = nil
+        }
+        return app.flatMap { settings.clipPrefix(forApp: $0) } ?? fallback
     }
 
     private func makeOutputURL(prefix: String, ext: String) -> URL? {

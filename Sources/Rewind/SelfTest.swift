@@ -136,6 +136,9 @@ enum SelfTest {
             ("Holiday video.mp4", 99, false),
             ("Replay notes.txt", 99, false),
             (".mixing-ABC.mp4", 99, false),
+            ("ROBLOX 2026-01-01 at 10.00.00 (trimmed).mp4", 20, true), // app name Rewind used
+            ("ROBLOX notes.mp4", 99, false),                         // no date stamp
+            ("MINECRAFT 2026-01-01 at 10.00.00.mp4", 99, false),     // app name Rewind never used
         ]
         for (name, age, _) in files {
             let url = d.appendingPathComponent(name)
@@ -144,9 +147,15 @@ enum SelfTest {
             try? fm.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: url.path)
         }
         let r = Cleanup.run(in: d, olderThan: 14, now: now,
-                            keep: [d.appendingPathComponent("Recording in progress.mp4")],
+                            keep: [d.appendingPathComponent("Recording in progress.mp4")], appPrefixes: ["ROBLOX"],
                             remove: { try fm.removeItem(at: $0) })
-        var ok = r.count == 3 && r.bytes == 3000
+        var ok = r.count == 4 && r.bytes == 4000
+        let names: [(String, String?)] = [("ROBLOX 2026-11-13 at 16.53.58.mp4", "ROBLOX"),
+                                          ("SEA OF THIEVES 2026-11-13 at 16.53.58 (2).png", "SEA OF THIEVES"),
+                                          ("Replay 2026-11-13 at 16.53.58.mp4", nil), ("Holiday.mp4", nil)]
+        for (name, want) in names where Cleanup.appPrefix(of: name) != want {
+            print("FAIL app name of \(name): \(Cleanup.appPrefix(of: name) ?? "nil")"); ok = false
+        }
         for (name, _, gone) in files where fm.fileExists(atPath: d.appendingPathComponent(name).path) == gone {
             print("FAIL cleanup: \(name) should \(gone ? "be removed" : "stay")"); ok = false
         }
