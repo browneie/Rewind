@@ -39,7 +39,7 @@ struct ClipItem: Identifiable, Hashable {
         case .app: "gamecontroller.fill"
         }
     }
-    var tint: Color {
+    @MainActor var tint: Color {
         switch kind {
         case .replay: Theme.replay
         case .recording: Theme.record
@@ -159,11 +159,13 @@ final class ClipPreview: ObservableObject {
     let player = AVPlayer()
     weak var playerView: AVPlayerView?
 
-    func open(_ item: ClipItem) {
+    func open(_ item: ClipItem, play: Bool = true) {
+        if self.item == item { if play { togglePlay() }; return }
+        isTrimming = false
         self.item = item
         if item.isVideo {
             player.replaceCurrentItem(with: AVPlayerItem(url: item.url))
-            player.play()
+            if play { player.play() }
         } else {
             player.replaceCurrentItem(with: nil)
         }
@@ -271,156 +273,160 @@ enum ClipTrimmer {
 
 // MARK: - Views
 
-/// Row of the latest clips under the overlay's tiles.
-struct RecentClipsRow: View {
+/// Right pane: the selected clip (newest by default) in a player, with Trim / Finder / Trash, and the
+/// recent clips underneath.
+struct ClipPane: View {
+    let close: () -> Void
     @ObservedObject private var lib = ClipLibrary.shared
-    let width: CGFloat
-    private let gap = Theme.s(8)
+    @ObservedObject private var preview = ClipPreview.shared
+
+    private let width = Theme.s(Theme.clipPaneWidth)
+    private let gap = Theme.s(7)
 
     var body: some View {
-        let thumbW = (width - gap * CGFloat(ClipLibrary.limit - 1)) / CGFloat(ClipLibrary.limit)
-        VStack(alignment: .leading, spacing: Theme.s(8)) {
-            Text("Recent clips").font(Theme.font(12, .semibold)).foregroundStyle(Theme.muted)
-            if lib.items.isEmpty {
-                Text("Clips and screenshots you save show up here.")
-                    .font(Theme.font(11.5)).foregroundStyle(Theme.muted)
-                    .frame(width: width, height: thumbW * 9 / 16 + Theme.s(20))
-                    .background(RoundedRectangle(cornerRadius: Theme.s(10), style: .continuous).fill(Color.white.opacity(0.04)))
-            } else {
+        let item = preview.item
+        VStack(alignment: .leading, spacing: Theme.s(10)) {
+            HStack(spacing: Theme.s(8)) {
+                if let item {
+                    Image(systemName: item.icon).foregroundStyle(item.tint).font(Theme.font(13, .semibold))
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(item.title).font(Theme.font(13, .semibold)).lineLimit(1)
+                        Text(details(item)).font(Theme.font(10.5)).foregroundStyle(Theme.muted).lineLimit(1)
+                    }
+                } else {
+                    Text("Recent clips").font(Theme.font(13, .semibold))
+                }
+                Spacer(minLength: Theme.s(8))
+                if let item {
+                    if item.isVideo {
+                        Chip(title: preview.isSavingTrim ? "Saving…" : "Trim", icon: "scissors") { preview.beginTrim() }
+                            .disabled(preview.isTrimming || preview.isSavingTrim)
+                            .opacity(preview.isTrimming || preview.isSavingTrim ? 0.5 : 1)
+                    }
+                    Chip(title: nil, icon: "folder") { let url = item.url; close(); reveal(url) }.help("Show in Finder")
+                    Chip(title: nil, icon: "trash") { preview.close(); lib.trash(item) }.help("Move to Trash")
+                }
+                CircleButton(icon: "xmark", action: close).help("Close (Esc)")
+            }
+
+            ZStack {
+                Color.black
+                if let item {
+                    if item.isVideo {
+                        PlayerView(player: preview.player)
+                    } else if let image = NSImage(contentsOf: item.url) {
+                        Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                    }
+                } else {
+                    VStack(spacing: Theme.s(6)) {
+                        Image(systemName: "film.stack").font(.system(size: Theme.s(26))).foregroundStyle(Theme.muted)
+                        Text("Clips and screenshots you save show up here.")
+                            .font(Theme.font(11.5)).foregroundStyle(Theme.muted)
+                    }
+                }
+            }
+            .frame(width: width, height: mediaHeight(item))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.s(12), style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.s(12), style: .continuous).strokeBorder(Theme.line))
+
+            HStack {
+                Text(item?.isVideo == true
+                     ? (preview.isTrimming ? "Drag the yellow handles, then click Trim. The original is kept."
+                                           : "Space to play or pause · ← → to step a frame")
+                     : " ")
+                    .font(Theme.font(10)).foregroundStyle(Theme.muted).lineLimit(1)
+                Spacer()
+            }
+
+            if !lib.items.isEmpty {
+                let thumbW = (width - gap * CGFloat(ClipLibrary.limit - 1)) / CGFloat(ClipLibrary.limit)
                 HStack(spacing: gap) {
-                    ForEach(lib.items) { ClipThumb(item: $0, width: thumbW) }
+                    ForEach(lib.items) { ClipThumb(item: $0, width: thumbW, selected: $0 == item) }
                     Spacer(minLength: 0)
                 }
                 .frame(width: width, alignment: .leading)
             }
         }
-    }
-}
-
-private struct ClipThumb: View {
-    let item: ClipItem
-    let width: CGFloat
-    @ObservedObject private var lib = ClipLibrary.shared
-    @State private var hover = false
-
-    var body: some View {
-        let height = width * 9 / 16
-        let shape = RoundedRectangle(cornerRadius: Theme.s(8), style: .continuous)
-        Button { ClipPreview.shared.open(item) } label: {
-            VStack(alignment: .leading, spacing: Theme.s(5)) {
-                ZStack {
-                    Color.white.opacity(0.06)
-                    if let thumb = lib.thumbs[item.url] {
-                        Image(nsImage: thumb).resizable().aspectRatio(contentMode: .fill)
-                    } else {
-                        Image(systemName: item.icon).font(.system(size: Theme.s(16))).foregroundStyle(Theme.muted)
-                    }
-                    if hover {
-                        Color.black.opacity(0.3)
-                        Image(systemName: item.isVideo ? "play.fill" : "eye.fill")
-                            .font(.system(size: Theme.s(16), weight: .bold))
-                    }
-                }
-                .frame(width: width, height: height)
-                .clipShape(shape)
-                .overlay(shape.strokeBorder(hover ? item.tint.opacity(0.8) : Theme.line))
-                .overlay(alignment: .topLeading) {
-                    Image(systemName: item.icon).font(.system(size: Theme.s(8.5), weight: .bold))
-                        .foregroundStyle(item.tint)
-                        .padding(Theme.s(3.5))
-                        .background(Circle().fill(.black.opacity(0.55)))
-                        .padding(Theme.s(4))
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    if let d = lib.durations[item.url] {
-                        Text(formatDuration(d)).font(Theme.mono(9, .bold))
-                            .padding(.horizontal, Theme.s(4)).padding(.vertical, Theme.s(1.5))
-                            .background(Capsule().fill(.black.opacity(0.6)))
-                            .padding(Theme.s(4))
-                    }
-                }
-                Text(timeAgo(item.date)).font(Theme.font(10.5)).foregroundStyle(Theme.muted).lineLimit(1)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
-        .help(item.url.lastPathComponent)
-    }
-}
-
-/// The overlay's preview mode: video player or screenshot, with Back, Show in Finder and Trash.
-struct ClipPreviewPane: View {
-    let item: ClipItem
-    let close: () -> Void
-    @ObservedObject private var lib = ClipLibrary.shared
-    @ObservedObject private var preview = ClipPreview.shared
-
-    var body: some View {
-        let size = media
-        VStack(alignment: .leading, spacing: Theme.s(14)) {
-            HStack(spacing: Theme.s(12)) {
-                CircleButton(icon: "chevron.left") { preview.close() }.help("Back to the overlay")
-                VStack(alignment: .leading, spacing: Theme.s(2)) {
-                    HStack(spacing: Theme.s(7)) {
-                        Image(systemName: item.icon).foregroundStyle(item.tint)
-                        Text(item.title)
-                    }
-                    .font(Theme.font(16, .semibold))
-                    Text(details).font(Theme.font(11.5)).foregroundStyle(Theme.muted).lineLimit(1)
-                }
-                Spacer(minLength: Theme.s(16))
-                if item.isVideo {
-                    Chip(title: preview.isSavingTrim ? "Saving…" : "Trim", icon: "scissors") { preview.beginTrim() }
-                        .disabled(preview.isTrimming || preview.isSavingTrim)
-                        .opacity(preview.isTrimming || preview.isSavingTrim ? 0.5 : 1)
-                }
-                Chip(title: "Show in Finder", icon: "folder") { let url = item.url; close(); reveal(url) }
-                Chip(title: "Move to Trash", icon: "trash") { let it = item; preview.close(); lib.trash(it) }
-                CircleButton(icon: "xmark", action: close).help("Close (Esc)")
-            }
-            ZStack {
-                Color.black
-                if item.isVideo {
-                    PlayerView(player: preview.player)
-                } else if let image = NSImage(contentsOf: item.url) {
-                    Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
-                }
-            }
-            .frame(width: size.width, height: size.height)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.s(14), style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Theme.s(14), style: .continuous).strokeBorder(Theme.line))
-            if item.isVideo {
-                Text(preview.isTrimming
-                     ? "Drag the yellow handles, then click Trim. The original clip is kept."
-                     : "Space to play or pause · ← → to step a frame")
-                    .font(Theme.font(11)).foregroundStyle(Theme.muted)
-            }
-        }
+        .onAppear(perform: selectNewestIfNeeded)
+        .onChange(of: lib.items) { selectNewestIfNeeded() }
     }
 
-    /// Fits the media's aspect ratio into at most 70% of the screen.
-    private var media: CGSize {
-        let screen = NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900)
-        let maxW = min(Theme.s(640), screen.width * 0.7), maxH = screen.height * 0.6
-        let natural = lib.sizes[item.url] ?? CGSize(width: 16, height: 9)
+    /// Loads the newest clip, paused, when nothing is selected or the selection was removed.
+    private func selectNewestIfNeeded() {
+        if let item = preview.item, lib.items.contains(item) { return }
+        if let first = lib.items.first { preview.open(first, play: false) } else { preview.close() }
+    }
+
+    /// Height for the pane's fixed width, following the clip's aspect ratio within a sane range.
+    private func mediaHeight(_ item: ClipItem?) -> CGFloat {
+        let natural = item.flatMap { lib.sizes[$0.url] } ?? CGSize(width: 16, height: 9)
         let aspect = natural.width > 0 && natural.height > 0 ? natural.width / natural.height : 16 / 9
-        var w = maxW, h = maxW / aspect
-        if h > maxH { h = maxH; w = maxH * aspect }
-        return CGSize(width: max(w, Theme.s(320)), height: h)
+        let screenH = NSScreen.main?.visibleFrame.height ?? 900
+        return min(max(width / aspect, width * 9 / 21), width * 3 / 4, screenH * 0.55)
     }
 
-    private var details: String {
-        let f = DateFormatter()
-        f.dateStyle = .medium
-        f.timeStyle = .short
-        var parts = [f.string(from: item.date)]
+    private func details(_ item: ClipItem) -> String {
+        var parts = [timeAgo(item.date)]
         if let d = lib.durations[item.url] { parts.append(formatDuration(d)) }
         if let s = lib.sizes[item.url] { parts.append("\(Int(s.width))×\(Int(s.height))") }
         if let bytes = (try? item.url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
             parts.append(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+private struct ClipThumb: View {
+    let item: ClipItem
+    let width: CGFloat
+    let selected: Bool
+    @ObservedObject private var lib = ClipLibrary.shared
+    @State private var hover = false
+
+    var body: some View {
+        let height = width * 9 / 16
+        let shape = RoundedRectangle(cornerRadius: Theme.s(7), style: .continuous)
+        Button { ClipPreview.shared.open(item) } label: {
+            VStack(alignment: .leading, spacing: Theme.s(4)) {
+                ZStack {
+                    Color.white.opacity(0.06)
+                    if let thumb = lib.thumbs[item.url] {
+                        Image(nsImage: thumb).resizable().aspectRatio(contentMode: .fill)
+                    } else {
+                        Image(systemName: item.icon).font(.system(size: Theme.s(14))).foregroundStyle(Theme.muted)
+                    }
+                    if hover && !selected {
+                        Color.black.opacity(0.3)
+                        Image(systemName: item.isVideo ? "play.fill" : "eye.fill")
+                            .font(.system(size: Theme.s(14), weight: .bold))
+                    }
+                }
+                .frame(width: width, height: height)
+                .clipShape(shape)
+                .overlay(shape.strokeBorder(selected ? item.tint : (hover ? item.tint.opacity(0.6) : Theme.line),
+                                            lineWidth: selected ? Theme.s(1.5) : 1))
+                .overlay(alignment: .topLeading) {
+                    Image(systemName: item.icon).font(.system(size: Theme.s(7.5), weight: .bold))
+                        .foregroundStyle(item.tint)
+                        .padding(Theme.s(3))
+                        .background(Circle().fill(.black.opacity(0.55)))
+                        .padding(Theme.s(3))
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if let d = lib.durations[item.url] {
+                        Text(formatDuration(d)).font(Theme.mono(8, .bold))
+                            .padding(.horizontal, Theme.s(3.5)).padding(.vertical, Theme.s(1))
+                            .background(Capsule().fill(.black.opacity(0.6)))
+                            .padding(Theme.s(3))
+                    }
+                }
+                Text(timeAgo(item.date)).font(Theme.font(9.5)).foregroundStyle(selected ? .white : Theme.muted).lineLimit(1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
+        .help(item.url.lastPathComponent)
     }
 }
 

@@ -157,6 +157,35 @@ struct SettingsView: View {
             }
 
             Section {
+                Picker("Layout", selection: $s.overlayLayout) {
+                    ForEach(OverlayLayout.allCases) { Text($0.label).tag($0) }
+                }
+                ColorPicker("Accent color", selection: $s.accentColor, supportsOpacity: false)
+                LabeledContent("Presets") {
+                    HStack(spacing: 7) {
+                        ForEach(Theme.accentPresets, id: \.hex) { preset in
+                            Button { s.accentHex = preset.hex } label: {
+                                Circle().fill(Color(hex: preset.hex)).frame(width: 18, height: 18)
+                                    .overlay(Circle().strokeBorder(.primary.opacity(s.accentHex == preset.hex ? 0.9 : 0.15),
+                                                                   lineWidth: s.accentHex == preset.hex ? 2 : 1))
+                            }
+                            .buttonStyle(.plain).help(preset.name)
+                        }
+                    }
+                }
+                LabeledContent("Dim the game") {
+                    Slider(value: $s.overlayDim, in: 0...0.9).frame(width: 180)
+                }
+                Toggle("Show hotkeys in the overlay", isOn: $s.showHotkeys)
+                Button("Preview overlay") { OverlayController.shared.show() }
+            } header: {
+                Text("Overlay")
+            } footer: {
+                Text("The accent color is used for Instant Replay and highlights. Click the color well for the color wheel. Changes apply the next time the overlay opens.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
                 ForEach(HotkeyAction.allCases) { action in
                     LabeledContent(action.label) { HotkeyField(action: action) }
                 }

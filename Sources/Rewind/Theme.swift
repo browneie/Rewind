@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// Look of the overlay and notifications, from the design made in design/overlay-mockup.html.
+/// Look of the overlay and notifications.
 /// Change values here and run ./build.sh to see them.
 enum Theme {
     // Size multiplier for everything (mockup "Size").
@@ -10,17 +10,27 @@ enum Theme {
     static let radius: CGFloat = 34
     // How opaque the dark tint over the blurred background is, 0–1 (mockup "Panel opacity").
     static let panelOpacity: Double = 0.64
-    // How much the game behind the overlay is darkened, 0–1 (mockup "Dim the game").
-    static let dim: Double = 0.6
+    // How much the game behind the overlay is darkened, 0–1. Set in Settings → Overlay.
+    @MainActor static var dim: Double { Settings.shared.overlayDim }
     // true = blurred glass behind the panel, false = solid panel.
     static let glass = true
 
-    static let accent = Color(hex: 0x3DDC84)
-    static let replay = Color(hex: 0x3DDC84)
+    // Accent (and Instant Replay) color. Set in Settings → Overlay; presets below, or any color from the wheel.
+    @MainActor static var accent: Color { Settings.shared.accentColor }
+    @MainActor static var replay: Color { accent }
     static let record = Color(hex: 0xFF4D5E)
     static let screenshot = Color(hex: 0x4DA3FF)
+    static let defaultAccent: UInt32 = 0x3DDC84
+    static let accentPresets: [(name: String, hex: UInt32)] = [
+        ("Rewind green", 0x3DDC84), ("Classic green", 0x76B900), ("Sky", 0x4DA3FF), ("Violet", 0xA78BFA),
+        ("Amber", 0xFFB454), ("Rose", 0xFF6B9D), ("White", 0xF2F2F2),
+    ]
 
-    static let showHotkeys = true
+    @MainActor static var showHotkeys: Bool { Settings.shared.showHotkeys }
+
+    // Two-pane overlay: width of the actions pane and of the clip pane (before scaling).
+    static let actionsWidth: CGFloat = 215
+    static let clipPaneWidth: CGFloat = 430
 
     // Text
     static let brand = "Rewind"
@@ -47,6 +57,25 @@ extension Color {
     init(hex: UInt32) {
         self.init(red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255,
                   blue: Double(hex & 0xFF) / 255)
+    }
+
+    /// 0xRRGGBB in sRGB, for saving.
+    var hexValue: UInt32? {
+        guard let c = NSColor(self).usingColorSpace(.sRGB) else { return nil }
+        let r = UInt32((c.redComponent * 255).rounded()), g = UInt32((c.greenComponent * 255).rounded()), b = UInt32((c.blueComponent * 255).rounded())
+        return r << 16 | g << 8 | b
+    }
+}
+
+/// Overlay layouts, chosen in Settings → Overlay.
+enum OverlayLayout: String, CaseIterable, Identifiable {
+    case panes, classic
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .panes: "Two panes (actions + player)"
+        case .classic: "Classic (ShadowPlay-style bar)"
+        }
     }
 }
 

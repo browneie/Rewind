@@ -1,6 +1,7 @@
 import Foundation
 import Carbon.HIToolbox
 import AppKit
+import SwiftUI
 
 struct RewindError: LocalizedError {
     let message: String
@@ -213,6 +214,7 @@ final class Settings: ObservableObject {
         static let mixMic = "mixMicrophone"
         static let cleanup = "autoCleanup", cleanupDays = "cleanupDays"
         static let appPrefixes = "appPrefixes"
+        static let layout = "overlayLayout", accent = "accentColor", dim = "overlayDim", showHotkeys = "showHotkeys"
     }
 
     @Published var displayID: UInt32 { didSet { d.set(Int(displayID), forKey: K.display) } }
@@ -233,6 +235,15 @@ final class Settings: ObservableObject {
     @Published var cleanupDays: Int { didSet { d.set(cleanupDays, forKey: K.cleanupDays) } }
     /// App names used to name clips ("Roblox"), so cleanup and Recent clips still recognise those files.
     @Published private(set) var appPrefixes: [String] { didSet { d.set(appPrefixes, forKey: K.appPrefixes) } }
+    @Published var overlayLayout: OverlayLayout { didSet { d.set(overlayLayout.rawValue, forKey: K.layout) } }
+    @Published var accentHex: UInt32 { didSet { d.set(Int(accentHex), forKey: K.accent) } }
+    @Published var overlayDim: Double { didSet { d.set(overlayDim, forKey: K.dim) } }
+    @Published var showHotkeys: Bool { didSet { d.set(showHotkeys, forKey: K.showHotkeys) } }
+
+    var accentColor: Color {
+        get { Color(hex: accentHex) }
+        set { if let h = newValue.hexValue, h != accentHex { accentHex = h } }
+    }
     @Published private(set) var hotkeys: [String: Hotkey] {
         didSet { d.set(try? JSONEncoder().encode(hotkeys), forKey: K.hotkeys) }
     }
@@ -242,6 +253,7 @@ final class Settings: ObservableObject {
             K.fps: 60, K.quality: Quality.high.rawValue, K.codec: VideoCodec.h264.rawValue,
             K.resolution: 0, K.cursor: true, K.sysAudio: true, K.mic: false, K.mixMic: true,
             K.replay: 120, K.startReplay: true, K.cleanup: false, K.cleanupDays: 14,
+            K.layout: OverlayLayout.panes.rawValue, K.accent: Int(Theme.defaultAccent), K.dim: 0.6, K.showHotkeys: true,
         ])
         displayID = UInt32(clamping: d.integer(forKey: K.display))
         captureAppID = d.string(forKey: K.appID) ?? ""
@@ -259,6 +271,10 @@ final class Settings: ObservableObject {
         autoCleanup = d.bool(forKey: K.cleanup)
         cleanupDays = max(1, d.integer(forKey: K.cleanupDays))
         appPrefixes = d.stringArray(forKey: K.appPrefixes) ?? []
+        overlayLayout = OverlayLayout(rawValue: d.string(forKey: K.layout) ?? "") ?? .panes
+        accentHex = UInt32(clamping: d.integer(forKey: K.accent)) & 0xFFFFFF
+        overlayDim = min(max(d.double(forKey: K.dim), 0), 0.9)
+        showHotkeys = d.bool(forKey: K.showHotkeys)
         outputDirectory = d.string(forKey: K.output).map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0].appendingPathComponent("Rewind")
         if let data = d.data(forKey: K.hotkeys),
