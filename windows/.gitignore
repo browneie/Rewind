@@ -1,0 +1,15 @@
+bin/
+obj/
+build/
+dist/
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.log
+*.tmp
+*.part
+TestResults/
+Thumbs.db
+desktop.ini

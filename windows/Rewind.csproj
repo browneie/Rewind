@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- Built against the 26100 SDK projection for newer capture APIs; those are feature-checked at
+         runtime, so the app still runs on Windows 10 2004 (19041) and later. -->
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>Rewind</AssemblyName>
+    <RootNamespace>Rewind</RootNamespace>
+    <ApplicationIcon>Assets\Rewind.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>1.0.0</Version>
+    <Product>Rewind</Product>
+    <Description>ShadowPlay-style screen recorder</Description>
+    <Copyright>MIT License</Copyright>
+    <!-- WPF Fluent theme and WinForms dark mode are still marked experimental in .NET 10. -->
+    <!-- WFO0003: DPI awareness is set in app.manifest because WPF, not WinForms, owns the UI. -->
+    <NoWarn>$(NoWarn);WPF0001;WFO5001;WFO0003</NoWarn>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WPF and WinForms both define Application, Color, etc. Only WPF is imported implicitly. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+    <Using Include="System.IO" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.8.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\Rewind.ico" />
+  </ItemGroup>
+
+</Project>

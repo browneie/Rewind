@@ -4,3 +4,5 @@ dist/
 .DS_Store
 .swiftpm/
 *.xcodeproj/
+Thumbs.db
+desktop.ini
