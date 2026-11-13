@@ -28,7 +28,7 @@ final class HotkeyManager {
         installHandlerIfNeeded()
         unregisterAll()
         var failed: [Hotkey] = []
-        for (i, (hk, action)) in bindings.enumerated() {
+        for (i, (hk, action)) in bindings.enumerated() where hk.isSet {
             let id = EventHotKeyID(signature: OSType(0x5257_4E44) /* 'RWND' */, id: UInt32(i + 1))
             var ref: EventHotKeyRef?
             let status = RegisterEventHotKey(hk.keyCode, hk.modifiers, id, GetApplicationEventTarget(), 0, &ref)

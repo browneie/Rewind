@@ -107,6 +107,10 @@ struct Hotkey: Codable, Equatable {
     var modifiers: UInt32 // Carbon modifier mask
     var display: String
 
+    /// An action with no shortcut. Saved like a normal hotkey so it survives restarts.
+    static let none = Hotkey(keyCode: .max, modifiers: 0, display: "No bind set")
+    var isSet: Bool { keyCode != Hotkey.none.keyCode }
+
     static let functionKeys: [UInt32: Int] = [
         0x7A: 1, 0x78: 2, 0x63: 3, 0x76: 4, 0x60: 5, 0x61: 6, 0x62: 7, 0x64: 8, 0x65: 9, 0x6D: 10,
         0x67: 11, 0x6F: 12, 0x69: 13, 0x6B: 14, 0x71: 15, 0x6A: 16, 0x40: 17, 0x4F: 18, 0x50: 19, 0x5A: 20,
@@ -151,6 +155,7 @@ struct Hotkey: Codable, Equatable {
 
     /// Key equivalent + mask for showing the shortcut in an NSMenu.
     var menuKeyEquivalent: (String, NSEvent.ModifierFlags) {
+        guard isSet else { return ("", []) }
         var flags: NSEvent.ModifierFlags = []
         if modifiers & UInt32(controlKey) != 0 { flags.insert(.control) }
         if modifiers & UInt32(optionKey) != 0 { flags.insert(.option) }
@@ -263,6 +268,13 @@ final class Settings: ObservableObject {
     func hotkey(_ a: HotkeyAction) -> Hotkey { hotkeys[a.rawValue] ?? a.defaultHotkey }
     func setHotkey(_ h: Hotkey, for a: HotkeyAction) { hotkeys[a.rawValue] = h }
     func resetHotkeys() { hotkeys = [:] }
+    func clearHotkey(_ a: HotkeyAction) { hotkeys[a.rawValue] = Hotkey.none }
+
+    /// "⌥F10 to save", or "" when that action has no shortcut.
+    func hotkeyHint(_ a: HotkeyAction, _ what: String) -> String {
+        let h = hotkey(a)
+        return h.isSet ? "\(h.display) \(what)" : ""
+    }
 
     var captureSignature: CaptureSignature {
         CaptureSignature(displayID: displayID, appID: captureAppID, appName: captureAppName,

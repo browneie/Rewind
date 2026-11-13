@@ -49,7 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if settings.startReplayOnLaunch {
             controller.startReplay()
         } else {
-            Toast.show("Rewind is running", "\(settings.hotkey(.toggleOverlay).display) opens the overlay",
+            let hint = settings.hotkeyHint(.toggleOverlay, "opens the overlay")
+            Toast.show("Rewind is running", hint.isEmpty ? "Open the overlay from the menu bar." : hint,
                        icon: "record.circle", tint: .green)
         }
     }

@@ -76,8 +76,9 @@ final class Controller: ObservableObject {
         reconcile { [weak self] ok in
             guard let self, ok, self.replayActive else { return }
             let what = self.engine.capturedApp.map { "\($0) · " } ?? ""
+            let hint = self.settings.hotkeyHint(.saveReplay, "to save")
             Toast.show("Instant Replay is on",
-                       "\(what)Keeping the last \(formatDuration(Double(self.settings.replaySeconds))) · \(self.settings.hotkey(.saveReplay).display) to save",
+                       "\(what)Keeping the last \(formatDuration(Double(self.settings.replaySeconds)))\(hint.isEmpty ? "" : " · " + hint)",
                        icon: "arrow.counterclockwise.circle.fill", tint: .green)
         }
     }
@@ -93,7 +94,8 @@ final class Controller: ObservableObject {
 
     func saveReplay() {
         guard replayActive else {
-            Toast.show("Instant Replay is off", "Press \(settings.hotkey(.toggleReplay).display) to turn it on",
+            let hint = settings.hotkeyHint(.toggleReplay, "to turn it on")
+            Toast.show("Instant Replay is off", hint.isEmpty ? "Turn it on from the overlay or the menu bar." : "Press " + hint,
                        icon: "exclamationmark.triangle.fill", tint: .orange)
             return
         }
@@ -133,7 +135,8 @@ final class Controller: ObservableObject {
         reconcile { [weak self] ok in
             guard let self, ok, self.recording else { return }
             self.engine.forceKeyframe()
-            Toast.show("Recording started", "\(self.settings.hotkey(.toggleRecording).display) to stop",
+            let hint = self.settings.hotkeyHint(.toggleRecording, "to stop")
+            Toast.show("Recording started", hint.isEmpty ? nil : hint,
                        icon: "record.circle.fill", tint: .red)
         }
     }

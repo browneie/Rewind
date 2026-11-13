@@ -164,7 +164,7 @@ struct SettingsView: View {
             } header: {
                 Text("Hotkeys")
             } footer: {
-                Text("On a Mac keyboard, hold fn for F-keys unless they're set to work as standard function keys.")
+                Text("Click a shortcut, then press the new keys. Press Esc to remove it. On a Mac keyboard, hold fn for F-keys unless they're set to work as standard function keys.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -231,6 +231,7 @@ private struct HotkeyField: View {
         Button(recording ? "Press a shortcut…" : s.hotkey(action).display) {
             recording ? stop() : start()
         }
+        .foregroundStyle(!recording && !s.hotkey(action).isSet ? .secondary : .primary)
         .frame(minWidth: 130)
         .onDisappear(perform: stop)
     }
@@ -239,7 +240,7 @@ private struct HotkeyField: View {
         recording = true
         HotkeyManager.shared.suspend()
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
-            if e.keyCode == 53 { stop(); return nil } // Esc cancels
+            if e.keyCode == 53 { s.clearHotkey(action); stop(); return nil } // Esc clears the bind
             let mods = Hotkey.carbonModifiers(e.modifierFlags)
             let code = UInt32(e.keyCode)
             guard mods != 0 || Hotkey.functionKeys[code] != nil else { NSSound.beep(); return nil }

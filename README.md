@@ -34,6 +34,8 @@ A ShadowPlay-style screen recorder for macOS. Rewind keeps the last few minutes 
 
 On a Mac keyboard you may need to hold **fn** for the F-keys.
 
+To change a hotkey, click it in Settings and press the new keys. Press **Esc** instead to remove it (it shows "No bind set").
+
 In the overlay, **left-click** Instant Replay to save a clip and **right-click** it to turn replay off. Record and Screenshot work with either mouse button.
 
 ## Install
