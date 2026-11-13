@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rewind overlay mockup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {
+  --replay: #3ddc84; --record: #ff4d5e; --shot: #4da3ff; --accent: #3ddc84;
+  --radius: 22px; --scale: 1; --panel-alpha: .78; --dim: .45; --blur: 28px;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  --bg: 18,18,22; --fg: 255,255,255; --muted: rgba(255,255,255,.58); --line: rgba(255,255,255,.09);
+  --tile: rgba(255,255,255,.05); --tile-hover: rgba(255,255,255,.09);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: #0b0b0e; color: #eee; font-family: -apple-system, BlinkMacSystemFont, sans-serif; overflow: hidden; }
+body { display: grid; grid-template-columns: 1fr 340px; }
+
+/* ---------- fake game scene ---------- */
+#stage { position: relative; overflow: hidden; container-type: size;
+  background:
+    radial-gradient(1200px 500px at 70% 110%, #1d3b2a 0 40%, transparent 41%),
+    radial-gradient(900px 420px at 15% 115%, #234a33 0 45%, transparent 46%),
+    radial-gradient(600px 300px at 80% 18%, rgba(255,190,120,.55), transparent 70%),
+    linear-gradient(180deg, #3a3f7a 0%, #b9677a 55%, #f0a86a 72%, #2a3b2e 72.2%, #16251b 100%);
+}
+#stage .sun { position: absolute; left: 72%; top: 34%; width: 90px; height: 90px; border-radius: 50%;
+  background: radial-gradient(circle, #ffe3a3, #ffb15e 60%, transparent 62%); filter: blur(1px); }
+#stage .hud { position: absolute; font: 600 12px/1 ui-monospace, Menlo, monospace; color: rgba(255,255,255,.85); text-shadow: 0 1px 2px #000; }
+#stage .hp { left: 24px; bottom: 24px; }
+#stage .hp i { display: block; width: 220px; height: 10px; margin-top: 6px; border-radius: 5px; background: linear-gradient(90deg, #ff5b5b 72%, rgba(255,255,255,.2) 72%); }
+#stage .ammo { right: 24px; bottom: 24px; font-size: 28px; }
+#stage .map { right: 24px; top: 24px; width: 130px; height: 130px; border-radius: 50%; border: 2px solid rgba(255,255,255,.5);
+  background: radial-gradient(circle at 50% 50%, #fff 0 3px, transparent 4px), conic-gradient(from 200deg, rgba(255,255,255,.18) 0 40deg, transparent 40deg), rgba(20,30,25,.6); }
+#stage .cross { position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; transform: translate(-50%,-50%);
+  background: linear-gradient(#fff,#fff) center/2px 100% no-repeat, linear-gradient(#fff,#fff) center/100% 2px no-repeat; opacity: .8; }
+
+#dim { position: absolute; inset: 0; background: rgba(0,0,0,var(--dim)); transition: opacity .15s; }
+#stage.closed #dim, #stage.closed #overlay { opacity: 0; pointer-events: none; }
+#reopen { position: absolute; left: 50%; top: 16px; transform: translateX(-50%); display: none; padding: 8px 14px; border-radius: 999px;
+  background: rgba(0,0,0,.55); color: #fff; font-size: 12px; border: 1px solid rgba(255,255,255,.15); cursor: pointer; }
+#stage.closed #reopen { display: block; }
+
+/* ---------- overlay ---------- */
+#overlay { position: absolute; font-family: var(--font); color: rgb(var(--fg)); transition: opacity .15s;
+  transform-origin: center; zoom: var(--scale); }
+.panelbg { background: rgba(var(--bg), var(--panel-alpha)); border: 1px solid var(--line); border-radius: var(--radius);
+  backdrop-filter: blur(var(--blur)) saturate(160%); -webkit-backdrop-filter: blur(var(--blur)) saturate(160%);
+  box-shadow: 0 30px 80px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06); }
+
+#overlay.layout-center { left: 50%; top: 50%; translate: -50% -50%; }
+#overlay.layout-dock   { left: 50%; bottom: 28px; translate: -50% 0; }
+#overlay.layout-top    { left: 20px; right: 20px; top: 20px; }
+#overlay.layout-side   { right: 20px; top: 20px; bottom: 20px; width: 330px; }
+
+.ov { padding: 22px; display: flex; flex-direction: column; gap: 18px; }
+.layout-dock .ov, .layout-top .ov { padding: 14px 16px; gap: 12px; }
+.layout-side .ov { height: 100%; }
+
+.head { display: flex; align-items: center; gap: 12px; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 750; font-size: 20px; letter-spacing: -.01em; }
+.brand .logo { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center;
+  background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #000)); color: #000; }
+.recpill { display: none; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font: 700 12px/1 ui-monospace, Menlo, monospace;
+  background: color-mix(in srgb, var(--record) 22%, transparent); color: var(--record); }
+.recording .recpill { display: inline-flex; }
+.recpill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--record); animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: .2; } }
+.info { margin-left: auto; font-size: 12px; color: var(--muted); }
+.x { width: 28px; height: 28px; border-radius: 50%; border: 0; background: var(--tile-hover); color: inherit; cursor: pointer; display: grid; place-items: center; }
+.x:hover { background: rgba(255,255,255,.16); }
+.hide-status .info, .hide-status .status, .hide-status .foot .meta { display: none; }
+
+.tiles { display: flex; gap: 14px; }
+.layout-side .tiles { flex-direction: column; }
+
+/* card tiles */
+.tile { --c: var(--accent); position: relative; width: 240px; padding: 16px; border-radius: calc(var(--radius) * .72);
+  background: var(--tile); border: 1px solid var(--line); display: flex; flex-direction: column; gap: 9px; transition: background .15s, border-color .15s, transform .15s; overflow: hidden; }
+.tile:hover { background: var(--tile-hover); }
+.tile.on { border-color: color-mix(in srgb, var(--c) 60%, transparent);
+  background: linear-gradient(160deg, color-mix(in srgb, var(--c) 16%, transparent), var(--tile) 60%); }
+.layout-side .tile { width: auto; }
+.tile .top { display: flex; align-items: center; justify-content: space-between; }
+.ic { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; background: rgba(255,255,255,.07); color: rgba(255,255,255,.9); }
+.tile.on .ic { background: color-mix(in srgb, var(--c) 24%, transparent); color: var(--c); }
+.ic svg { width: 22px; height: 22px; }
+.badge { font: 800 10px/1 -apple-system, sans-serif; letter-spacing: .06em; padding: 4px 7px; border-radius: 999px; opacity: 0;
+  background: color-mix(in srgb, var(--c) 25%, transparent); color: var(--c); }
+.tile.on .badge { opacity: 1; }
+.title { font-size: 17px; font-weight: 650; }
+.status { font-size: 12.5px; color: var(--muted); min-height: 32px; line-height: 1.35; }
+.meter { height: 4px; border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; }
+.meter i { display: block; height: 100%; width: 0; background: var(--c); transition: width .9s linear; }
+.btns { display: flex; flex-direction: column; gap: 6px; margin-top: auto; }
+.btn { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; border-radius: 10px; border: 0;
+  font: 550 13px var(--font); color: inherit; background: rgba(255,255,255,.08); cursor: pointer; transition: background .12s, transform .08s; }
+.btn:hover { background: rgba(255,255,255,.15); }
+.btn:active { transform: scale(.98); }
+.btn.primary { background: var(--c); color: #0a0a0a; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn[disabled] { opacity: .35; pointer-events: none; }
+.kbd { font: 600 11px ui-monospace, Menlo, monospace; opacity: .7; padding: 2px 6px; border-radius: 5px; background: rgba(0,0,0,.18); }
+.btn:not(.primary) .kbd { background: rgba(255,255,255,.07); }
+.hide-keys .kbd { display: none; }
+
+/* compact tiles */
+.style-compact .tile { width: 300px; flex-direction: row; align-items: center; padding: 10px 12px; gap: 12px; }
+.style-compact .tile .top .badge, .style-compact .status, .style-compact .meter { display: none; }
+.style-compact .tile .title { font-size: 14px; flex: 1; }
+.style-compact .btns { flex-direction: row; margin: 0; }
+.style-compact .btn { padding: 7px 10px; }
+.style-compact .btn .lbl { display: none; }
+.style-compact .btn .kbd { opacity: 1; }
+.style-compact .ic { width: 34px; height: 34px; border-radius: 10px; }
+
+/* big icon tiles */
+.style-icons .tile { width: 150px; align-items: center; text-align: center; padding: 18px 12px 14px; cursor: pointer; }
+.style-icons .tile .top { justify-content: center; }
+.style-icons .ic { width: 72px; height: 72px; border-radius: 50%; }
+.style-icons .ic svg { width: 32px; height: 32px; }
+.style-icons .badge { position: absolute; top: 10px; right: 10px; }
+.style-icons .status, .style-icons .meter { display: none; }
+.style-icons .btns .btn:not(:first-child) { display: none; }
+.style-icons .btn { justify-content: center; background: transparent; padding: 4px; }
+.style-icons .btn.primary { background: transparent; color: inherit; }
+.style-icons .btn .lbl { display: none; }
+.style-icons .title { font-size: 14px; }
+
+.foot { display: flex; align-items: center; gap: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 999px; border: 0; background: var(--tile-hover); color: inherit; font: 550 12px var(--font); cursor: pointer; }
+.chip:hover { background: rgba(255,255,255,.16); }
+.chip svg { width: 14px; height: 14px; }
+.foot .meta { margin-left: auto; font-size: 12px; color: var(--muted); }
+.layout-dock .foot, .layout-top .foot { display: none; }
+.layout-side .foot { margin-top: auto; flex-wrap: wrap; }
+
+/* light theme */
+.theme-light { --bg: 245,245,248; --fg: 20,20,24; --muted: rgba(0,0,0,.55); --line: rgba(0,0,0,.08); --tile: rgba(0,0,0,.04); --tile-hover: rgba(0,0,0,.07); }
+.theme-light .btn, .theme-light .chip, .theme-light .x { background: rgba(0,0,0,.06); }
+.theme-light .btn:hover, .theme-light .chip:hover { background: rgba(0,0,0,.1); }
+.theme-light .ic { background: rgba(0,0,0,.06); color: rgba(0,0,0,.8); }
+
+[contenteditable="true"] { outline: 1px dashed color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: 2px; border-radius: 3px; }
+
+/* ---------- toasts ---------- */
+#toasts { position: absolute; display: flex; flex-direction: column; gap: 8px; pointer-events: none; font-family: var(--font); zoom: var(--scale); }
+#toasts.tr { top: 16px; right: 16px; } #toasts.tl { top: 16px; left: 16px; } #toasts.tc { top: 16px; left: 50%; translate: -50% 0; }
+#toasts.br { bottom: 16px; right: 16px; flex-direction: column-reverse; } #toasts.bl { bottom: 16px; left: 16px; flex-direction: column-reverse; }
+.toast { width: 330px; display: flex; align-items: center; gap: 12px; padding: 11px 14px; border-radius: calc(var(--radius) * .6);
+  color: rgb(var(--fg)); animation: tin .18s ease-out; pointer-events: auto; }
+.toast.out { animation: tout .25s ease-in forwards; }
+.toast .ti { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none; }
+.toast .ti svg { width: 17px; height: 17px; }
+.toast b { display: block; font-size: 13px; }
+.toast small { font-size: 11.5px; color: var(--muted); }
+@keyframes tin { from { opacity: 0; transform: translateY(-6px) scale(.98); } }
+@keyframes tout { to { opacity: 0; transform: translateY(-6px); } }
+
+/* ---------- design panel ---------- */
+#panel { background: #141418; border-left: 1px solid #26262c; overflow-y: auto; padding: 18px 18px 30px; font-size: 13px; }
+#panel h1 { font-size: 15px; margin: 0 0 4px; }
+#panel p.hint { color: #8a8a94; margin: 0 0 14px; font-size: 12px; line-height: 1.45; }
+#panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #8a8a94; margin: 20px 0 8px; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 7px 0; }
+.row label { color: #cfcfd6; }
+.row input[type=range] { width: 140px; accent-color: var(--accent); }
+.row input[type=color] { width: 34px; height: 24px; border: 1px solid #333; border-radius: 6px; background: none; padding: 0; cursor: pointer; }
+.seg { display: flex; background: #1e1e24; border-radius: 8px; padding: 2px; gap: 2px; width: 100%; }
+.seg button { flex: 1; border: 0; background: none; color: #b8b8c2; padding: 6px 4px; border-radius: 6px; font: 500 12px -apple-system, sans-serif; cursor: pointer; }
+.seg button.on { background: #34343e; color: #fff; }
+select { background: #1e1e24; color: #eee; border: 1px solid #2c2c34; border-radius: 6px; padding: 4px 6px; font-size: 12px; }
+.order li { list-style: none; display: flex; align-items: center; gap: 8px; padding: 7px 9px; margin: 4px 0; background: #1e1e24; border-radius: 8px; cursor: grab; user-select: none; }
+.order li.drag { opacity: .4; }
+.order li .grip { color: #666; }
+.order li span { flex: 1; }
+.order { padding: 0; margin: 0; }
+.presets { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.presets button, .act { border: 1px solid #2c2c34; background: #1e1e24; color: #ddd; padding: 7px; border-radius: 8px; font: 500 12px -apple-system, sans-serif; cursor: pointer; }
+.presets button:hover, .act:hover { background: #26262e; }
+.act.main { background: var(--accent); color: #000; border-color: transparent; font-weight: 650; }
+.acts { display: flex; gap: 6px; flex-wrap: wrap; }
+textarea { width: 100%; height: 120px; margin-top: 8px; background: #0e0e12; color: #9fe3b8; border: 1px solid #2c2c34; border-radius: 8px; font: 11px ui-monospace, Menlo, monospace; padding: 8px; display: none; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div class="sun"></div>
+  <div class="hud hp">HP 72 / 100<i></i></div>
+  <div class="hud ammo">24 / 90</div>
+  <div class="hud map" style="position:absolute"></div>
+  <div class="cross"></div>
+  <div id="dim"></div>
+  <div id="overlay"></div>
+  <div id="toasts" class="tr"></div>
+  <button id="reopen">Overlay closed: click or press <b>Z</b> to reopen</button>
+</div>
+
+<aside id="panel">
+  <h1>Overlay designer</h1>
+  <p class="hint">The buttons in the overlay work, so try them. <b>Double-click any text</b> in the overlay to rename it. Drag tiles below to reorder. When you're happy, hit <b>Copy design</b> and copy the values into <code>Sources/Rewind/Theme.swift</code>.</p>
+
+  <h2>Presets</h2>
+  <div class="presets" id="presets"></div>
+
+  <h2>Layout</h2>
+  <div class="seg" data-key="layout">
+    <button data-v="center">Center</button><button data-v="dock">Dock</button><button data-v="top">Top bar</button><button data-v="side">Side</button>
+  </div>
+  <h2>Tile style</h2>
+  <div class="seg" data-key="tileStyle">
+    <button data-v="cards">Cards</button><button data-v="compact">Compact</button><button data-v="icons">Big icons</button>
+  </div>
+
+  <h2>Look</h2>
+  <div class="seg" data-key="theme"><button data-v="dark">Dark glass</button><button data-v="solid">Solid</button><button data-v="light">Light</button></div>
+  <div class="row"><label>Font</label>
+    <select data-key="font"><option value="system">System</option><option value="rounded">Rounded</option><option value="mono">Mono</option><option value="serif">Serif</option></select></div>
+  <div class="row"><label>Size</label><input type="range" data-key="scale" min="0.75" max="1.35" step="0.01"></div>
+  <div class="row"><label>Corner roundness</label><input type="range" data-key="radius" min="0" max="34" step="1"></div>
+  <div class="row"><label>Panel opacity</label><input type="range" data-key="panelAlpha" min="0.3" max="1" step="0.01"></div>
+  <div class="row"><label>Background blur</label><input type="range" data-key="blur" min="0" max="60" step="1"></div>
+  <div class="row"><label>Dim the game</label><input type="range" data-key="dim" min="0" max="0.85" step="0.01"></div>
+
+  <h2>Colors</h2>
+  <div class="row"><label>Brand / accent</label><input type="color" data-key="accent"></div>
+  <div class="row"><label>Instant Replay</label><input type="color" data-key="replay"></div>
+  <div class="row"><label>Record</label><input type="color" data-key="record"></div>
+  <div class="row"><label>Screenshot</label><input type="color" data-key="shot"></div>
+
+  <h2>Tiles</h2>
+  <ul class="order" id="order"></ul>
+
+  <h2>Details</h2>
+  <div class="row"><label>Show hotkey hints</label><input type="checkbox" data-key="showHotkeys"></div>
+  <div class="row"><label>Show status text</label><input type="checkbox" data-key="showStatus"></div>
+  <div class="row"><label>Notification position</label>
+    <select data-key="toastPos"><option value="tr">Top right</option><option value="tc">Top center</option><option value="tl">Top left</option><option value="br">Bottom right</option><option value="bl">Bottom left</option></select></div>
+  <div class="acts" style="margin-top:8px"><button class="act" id="testToast">Preview notification</button></div>
+
+  <h2>Export</h2>
+  <div class="acts">
+    <button class="act main" id="copy">Copy design</button>
+    <button class="act" id="reset">Reset</button>
+  </div>
+  <textarea id="json" readonly></textarea>
+</aside>
+
+<script>
+const ICONS = {
+  replay: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></svg>',
+  record: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5" fill="currentColor" stroke="none"/></svg>',
+  shot: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.6"/></svg>',
+  folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 6h6l2 2h10v11H3z"/></svg>',
+  gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>',
+  x: '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+  logo: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>',
+};
+
+const DEFAULT = {
+  layout: "center", tileStyle: "cards", theme: "dark", font: "system",
+  scale: 1, radius: 22, panelAlpha: 0.78, blur: 28, dim: 0.45,
+  accent: "#3ddc84", replay: "#3ddc84", record: "#ff4d5e", shot: "#4da3ff",
+  showHotkeys: true, showStatus: true, toastPos: "tr",
+  tiles: [{ id: "replay", visible: true }, { id: "record", visible: true }, { id: "shot", visible: true }],
+  text: {
+    brand: "Rewind",
+    "replay.title": "Instant Replay", "replay.save": "Save replay", "replay.on": "Turn on", "replay.off": "Turn off",
+    "record.title": "Record", "record.start": "Start recording", "record.stop": "Stop recording", "record.idle": "Record until you stop it.",
+    "shot.title": "Screenshot", "shot.take": "Take screenshot", "shot.status": "Full-resolution PNG of the display.",
+    "foot.folder": "Clips folder", "foot.settings": "Settings",
+  },
+};
+const PRESETS = {
+  "Default": {},
+  "Minimal": { layout: "dock", tileStyle: "compact", theme: "dark", radius: 14, panelAlpha: .7, blur: 30, dim: .1, showStatus: false },
+  "Neon": { theme: "solid", accent: "#b45cff", replay: "#00f0ff", record: "#ff2e88", shot: "#ffd400", radius: 6, font: "mono", panelAlpha: .92, dim: .55 },
+  "Light": { theme: "light", accent: "#0a84ff", replay: "#30b158", record: "#ff3b30", shot: "#0a84ff", panelAlpha: .82, dim: .25 },
+  "Console": { layout: "side", tileStyle: "cards", font: "rounded", radius: 26, dim: .35, accent: "#ff9f0a", replay: "#ff9f0a" },
+  "Big buttons": { layout: "center", tileStyle: "icons", font: "rounded", radius: 30, scale: 1.1 },
+};
+const HOTKEYS = { save: "⌥F10", toggle: "⌥⇧F10", rec: "⌥F9", shot: "⌥F1", overlay: "⌥Z" };
+const FONTS = {
+  system: '-apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif',
+  rounded: 'ui-rounded, "SF Pro Rounded", -apple-system, sans-serif',
+  mono: 'ui-monospace, "SF Mono", Menlo, monospace',
+  serif: 'ui-serif, "New York", Georgia, serif',
+};
+
+const clone = o => JSON.parse(JSON.stringify(o));
+const store = {
+  get() { try { return JSON.parse(localStorage.getItem("rewind-design") || "{}"); } catch { return {}; } },
+  set(v) { try { localStorage.setItem("rewind-design", JSON.stringify(v)); } catch {} },
+};
+let state = Object.assign(clone(DEFAULT), store.get());
+state.text = Object.assign(clone(DEFAULT.text), state.text || {});
+const sim = { replayOn: true, buffered: 64, length: 120, recording: false, recStart: 0 };
+
+const $ = s => document.querySelector(s);
+const fmt = s => { s = Math.round(s); return s < 60 ? s + "s" : Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+const T = k => state.text[k];
+const ed = (k, tag = "span", cls = "") => `<${tag} class="${cls}" data-text="${k}">${T(k)}</${tag}>`;
+const kbd = k => `<span class="kbd">${HOTKEYS[k]}</span>`;
+
+function tileHTML(id) {
+  if (id === "replay") {
+    const on = sim.replayOn;
+    return `<div class="tile ${on ? "on" : ""}" style="--c:var(--replay)" data-tile="replay">
+      <div class="top"><div class="ic">${ICONS.replay}</div><span class="badge">ON</span></div>
+      ${ed("replay.title", "div", "title")}
+      <div class="status">${on ? `Keeping the last ${fmt(sim.length)} · <b data-live="buf">${fmt(sim.buffered)}</b> buffered` : `Off. Turn it on to keep the last ${fmt(sim.length)} ready to save.`}</div>
+      <div class="meter"><i data-live="meter" style="width:${on ? (sim.buffered / sim.length * 100) : 0}%"></i></div>
+      <div class="btns">
+        <button class="btn primary" data-act="save" ${on ? "" : "disabled"}>${ed("replay.save", "span", "lbl")}${kbd("save")}</button>
+        <button class="btn" data-act="toggleReplay">${ed(on ? "replay.off" : "replay.on", "span", "lbl")}${kbd("toggle")}</button>
+      </div></div>`;
+  }
+  if (id === "record") {
+    const on = sim.recording;
+    return `<div class="tile ${on ? "on" : ""}" style="--c:var(--record)" data-tile="record">
+      <div class="top"><div class="ic">${ICONS.record}</div><span class="badge">REC</span></div>
+      ${ed("record.title", "div", "title")}
+      <div class="status">${on ? `Recording · <b data-live="rec">${fmt((Date.now() - sim.recStart) / 1000)}</b>` : ed("record.idle")}</div>
+      <div class="btns">
+        <button class="btn primary" data-act="rec">${ed(on ? "record.stop" : "record.start", "span", "lbl")}${kbd("rec")}</button>
+      </div></div>`;
+  }
+  return `<div class="tile" style="--c:var(--shot)" data-tile="shot">
+      <div class="top"><div class="ic">${ICONS.shot}</div><span class="badge"></span></div>
+      ${ed("shot.title", "div", "title")}
+      <div class="status">${ed("shot.status")}</div>
+      <div class="btns"><button class="btn primary" data-act="shot" style="--c:var(--shot)">${ed("shot.take", "span", "lbl")}${kbd("shot")}</button></div>
+    </div>`;
+}
+
+function render() {
+  const r = document.documentElement.style;
+  r.setProperty("--accent", state.accent); r.setProperty("--replay", state.replay);
+  r.setProperty("--record", state.record); r.setProperty("--shot", state.shot);
+  r.setProperty("--radius", state.radius + "px"); r.setProperty("--scale", state.scale);
+  r.setProperty("--panel-alpha", state.theme === "solid" ? Math.max(state.panelAlpha, .9) : state.panelAlpha);
+  r.setProperty("--blur", (state.theme === "solid" ? 0 : state.blur) + "px");
+  r.setProperty("--dim", state.dim); r.setProperty("--font", FONTS[state.font]);
+
+  const ov = $("#overlay");
+  ov.className = `layout-${state.layout} style-${state.tileStyle} theme-${state.theme}` +
+    (state.showHotkeys ? "" : " hide-keys") + (state.showStatus ? "" : " hide-status") + (sim.recording ? " recording" : "");
+  const tiles = state.tiles.filter(t => t.visible).map(t => tileHTML(t.id)).join("");
+  ov.innerHTML = `<div class="ov panelbg">
+    <div class="head">
+      <div class="brand"><span class="logo">${ICONS.logo}</span>${ed("brand")}</div>
+      <span class="recpill" data-live="pill">${fmt((Date.now() - sim.recStart) / 1000)}</span>
+      <span class="info">2880×1864 · 60 fps · H.264 · 26 Mbps</span>
+      <button class="x" data-act="close" title="Close (Esc)">${ICONS.x}</button>
+    </div>
+    <div class="tiles">${tiles}</div>
+    <div class="foot">
+      <button class="chip" data-act="folder">${ICONS.folder}${ed("foot.folder")}</button>
+      <button class="chip" data-act="settings">${ICONS.gear}${ed("foot.settings")}</button>
+      <span class="meta">Sound: system + mic</span>
+    </div></div>`;
+  $("#toasts").className = state.toastPos;
+  $("#toasts").classList.toggle("theme-light", state.theme === "light");
+  syncPanel();
+  store.set(state);
+}
+
+function toast(title, sub, color, icon = "check") {
+  const el = document.createElement("div");
+  el.className = "toast panelbg";
+  el.innerHTML = `<div class="ti" style="background:color-mix(in srgb, ${color} 22%, transparent);color:${color}">${ICONS[icon]}</div><div><b>${title}</b><small>${sub}</small></div>`;
+  $("#toasts").appendChild(el);
+  setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 260); }, 2800);
+}
+
+// overlay interactions
+$("#overlay").addEventListener("click", e => {
+  const b = e.target.closest("[data-act]"); if (!b || e.target.isContentEditable) return;
+  const a = b.dataset.act;
+  if (a === "save") toast("Replay saved", `${fmt(sim.buffered)} · Replay 2026-11-13 at 21.04.11.mp4`, state.replay);
+  if (a === "toggleReplay") { sim.replayOn = !sim.replayOn; sim.buffered = 0; toast(sim.replayOn ? "Instant Replay is on" : "Instant Replay is off", sim.replayOn ? `Keeping the last ${fmt(sim.length)}` : "", state.replay, "replay"); render(); }
+  if (a === "rec") { sim.recording = !sim.recording; if (sim.recording) { sim.recStart = Date.now(); toast("Recording started", `${HOTKEYS.rec} to stop`, state.record, "record"); } else toast("Recording saved", "Recording 2026-11-13 at 21.05.40.mp4", state.record); render(); }
+  if (a === "shot") toast("Screenshot saved", "Screenshot 2026-11-13 at 21.06.02.png", state.shot, "shot");
+  if (a === "close") $("#stage").classList.add("closed");
+  if (a === "folder" || a === "settings") toast(a === "folder" ? "Opens Finder" : "Opens Settings", "(mockup)", state.accent, a === "folder" ? "folder" : "gear");
+});
+$("#dim").addEventListener("click", () => $("#stage").classList.add("closed"));
+$("#reopen").addEventListener("click", () => $("#stage").classList.remove("closed"));
+document.addEventListener("keydown", e => {
+  if (document.activeElement?.isContentEditable) { if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); document.activeElement.blur(); } return; }
+  if (e.key === "Escape") $("#stage").classList.add("closed");
+  if (e.key.toLowerCase() === "z" && !e.target.closest("input,select,textarea")) $("#stage").classList.toggle("closed");
+});
+
+// double-click to rename
+$("#overlay").addEventListener("dblclick", e => {
+  const el = e.target.closest("[data-text]"); if (!el) return;
+  e.preventDefault();
+  el.contentEditable = "true"; el.focus();
+  document.getSelection().selectAllChildren(el);
+  el.addEventListener("blur", () => {
+    el.contentEditable = "false";
+    const v = el.textContent.trim();
+    if (v) state.text[el.dataset.text] = v;
+    render();
+  }, { once: true });
+});
+
+// live ticking
+setInterval(() => {
+  if (sim.replayOn) sim.buffered = Math.min(sim.length, sim.buffered + 1);
+  const buf = document.querySelector('[data-live="buf"]'); if (buf) buf.textContent = fmt(sim.buffered);
+  const m = document.querySelector('[data-live="meter"]'); if (m) m.style.width = (sim.buffered / sim.length * 100) + "%";
+  const t = fmt((Date.now() - sim.recStart) / 1000);
+  document.querySelectorAll('[data-live="rec"],[data-live="pill"]').forEach(x => x.textContent = t);
+}, 1000);
+
+// ----- design panel -----
+const NAMES = { replay: "Instant Replay", record: "Record", shot: "Screenshot" };
+function syncPanel() {
+  document.querySelectorAll(".seg").forEach(seg => seg.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.v === state[seg.dataset.key])));
+  document.querySelectorAll("#panel [data-key]:not(.seg)").forEach(el => {
+    if (el.type === "checkbox") el.checked = !!state[el.dataset.key]; else el.value = state[el.dataset.key];
+  });
+  const ol = $("#order");
+  ol.innerHTML = state.tiles.map((t, i) => `<li draggable="true" data-i="${i}"><span class="grip">⋮⋮</span><span>${NAMES[t.id]}</span><input type="checkbox" ${t.visible ? "checked" : ""} data-vis="${i}"></li>`).join("");
+}
+document.querySelectorAll(".seg").forEach(seg => seg.addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return; state[seg.dataset.key] = b.dataset.v; render();
+}));
+document.querySelectorAll("#panel [data-key]:not(.seg)").forEach(el => el.addEventListener("input", () => {
+  const k = el.dataset.key;
+  state[k] = el.type === "checkbox" ? el.checked : el.type === "range" ? parseFloat(el.value) : el.value;
+  render();
+}));
+let dragFrom = null;
+$("#order").addEventListener("dragstart", e => { dragFrom = +e.target.dataset.i; e.target.classList.add("drag"); });
+$("#order").addEventListener("dragover", e => e.preventDefault());
+$("#order").addEventListener("drop", e => {
+  const li = e.target.closest("li"); if (!li || dragFrom === null) return;
+  const to = +li.dataset.i; const [m] = state.tiles.splice(dragFrom, 1); state.tiles.splice(to, 0, m); dragFrom = null; render();
+});
+$("#order").addEventListener("change", e => {
+  if (e.target.dataset.vis === undefined) return;
+  const i = +e.target.dataset.vis;
+  state.tiles[i].visible = e.target.checked;
+  if (!state.tiles.some(t => t.visible)) { state.tiles[i].visible = true; }
+  render();
+});
+$("#presets").innerHTML = Object.keys(PRESETS).map(n => `<button data-p="${n}">${n}</button>`).join("");
+$("#presets").addEventListener("click", e => {
+  const n = e.target.dataset.p; if (!n) return;
+  const text = state.text, tiles = state.tiles;
+  state = Object.assign(clone(DEFAULT), PRESETS[n], { text, tiles });
+  render();
+});
+$("#testToast").addEventListener("click", () => toast("Replay saved", "1:58 · Replay 2026-11-13 at 21.04.11.mp4", state.replay));
+$("#copy").addEventListener("click", async () => {
+  const json = JSON.stringify(state, null, 2);
+  const ta = $("#json"); ta.style.display = "block"; ta.value = json;
+  try { await navigator.clipboard.writeText(json); $("#copy").textContent = "Copied ✓"; }
+  catch { ta.select(); $("#copy").textContent = "Select & copy below"; }
+  setTimeout(() => $("#copy").textContent = "Copy design", 2000);
+});
+$("#reset").addEventListener("click", () => { state = clone(DEFAULT); render(); });
+
+render();
+</script>
+</body>
+</html>
