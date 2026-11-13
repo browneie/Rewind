@@ -176,6 +176,15 @@ struct SettingsView: View {
                 LabeledContent("Dim the game") {
                     Slider(value: $s.overlayDim, in: 0...0.9).frame(width: 180)
                 }
+                LabeledContent("Player size") {
+                    HStack(spacing: 8) {
+                        Image(systemName: "rectangle.inset.filled").font(.caption).foregroundStyle(.secondary)
+                        Slider(value: $s.playerSize, in: Theme.playerSizeRange, step: 10).frame(width: 160)
+                        Image(systemName: "rectangle.inset.filled").font(.title3).foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(s.overlayLayout == .tiles)
+                .help("Width of the player in the Split layout and Classic's Gallery")
                 Toggle("Show hotkeys in the overlay", isOn: $s.showHotkeys)
                 Button("Preview overlay") { OverlayController.shared.show() }
             } header: {

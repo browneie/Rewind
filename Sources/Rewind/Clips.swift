@@ -277,11 +277,27 @@ enum ClipTrimmer {
 /// recent clips underneath.
 struct ClipPane: View {
     let close: () -> Void
+    /// Fixed width (Tiles); nil uses Settings → Player size.
+    var fixedWidth: CGFloat? = nil
+    /// Screen space the rest of the layout takes beside / above the pane, so the pane always fits.
+    var reservedWidth: CGFloat = 0
+    var reservedHeight: CGFloat = 0
+    var showsClose = true
     @ObservedObject private var lib = ClipLibrary.shared
     @ObservedObject private var preview = ClipPreview.shared
+    @ObservedObject private var settings = Settings.shared
 
-    private let width = Theme.s(Theme.clipPaneWidth)
+    private var screen: CGSize { NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900) }
+
+    /// Player width: fixed, or from Settings, kept on screen.
+    private var width: CGFloat {
+        if let fixedWidth { return fixedWidth }
+        let room = screen.width - reservedWidth - Theme.s(90)
+        return min(Theme.s(settings.playerSize), max(room, Theme.s(Theme.playerSizeRange.lowerBound)))
+    }
     private let gap = Theme.s(7)
+    /// Thumbnails keep one size whatever the player size.
+    private let thumbW = Theme.s(88)
 
     var body: some View {
         let item = preview.item
@@ -306,7 +322,7 @@ struct ClipPane: View {
                     Chip(title: nil, icon: "folder") { let url = item.url; close(); reveal(url) }.help("Show in Finder")
                     Chip(title: nil, icon: "trash") { preview.close(); lib.trash(item) }.help("Move to Trash")
                 }
-                CircleButton(icon: "xmark", action: close).help("Close (Esc)")
+                if showsClose { CircleButton(icon: "xmark", action: close).help("Close (Esc)") }
             }
 
             ZStack {
@@ -339,9 +355,9 @@ struct ClipPane: View {
             }
 
             if !lib.items.isEmpty {
-                let thumbW = (width - gap * CGFloat(ClipLibrary.limit - 1)) / CGFloat(ClipLibrary.limit)
+                let fits = max(1, Int((width + gap) / (thumbW + gap)))
                 HStack(spacing: gap) {
-                    ForEach(lib.items) { ClipThumb(item: $0, width: thumbW, selected: $0 == item) }
+                    ForEach(lib.items.prefix(fits)) { ClipThumb(item: $0, width: thumbW, selected: $0 == item) }
                     Spacer(minLength: 0)
                 }
                 .frame(width: width, alignment: .leading)
@@ -361,8 +377,9 @@ struct ClipPane: View {
     private func mediaHeight(_ item: ClipItem?) -> CGFloat {
         let natural = item.flatMap { lib.sizes[$0.url] } ?? CGSize(width: 16, height: 9)
         let aspect = natural.width > 0 && natural.height > 0 ? natural.width / natural.height : 16 / 9
-        let screenH = NSScreen.main?.visibleFrame.height ?? 900
-        return min(max(width / aspect, width * 9 / 21), width * 3 / 4, screenH * 0.55)
+        // Room left after the rest of the layout, the pane's header, hint line and thumbnails.
+        let room = screen.height - reservedHeight - Theme.s(150) - thumbW * 9 / 16
+        return max(min(max(width / aspect, width * 9 / 21), width * 3 / 4, room), Theme.s(140))
     }
 
     private func details(_ item: ClipItem) -> String {

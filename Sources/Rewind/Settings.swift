@@ -214,6 +214,7 @@ final class Settings: ObservableObject {
         static let mixMic = "mixMicrophone"
         static let cleanup = "autoCleanup", cleanupDays = "cleanupDays"
         static let appPrefixes = "appPrefixes"
+        static let playerSize = "playerSize"
         static let layout = "overlayLayout", accent = "accentColor", dim = "overlayDim", showHotkeys = "showHotkeys"
     }
 
@@ -239,6 +240,8 @@ final class Settings: ObservableObject {
     @Published var accentHex: UInt32 { didSet { d.set(Int(accentHex), forKey: K.accent) } }
     @Published var overlayDim: Double { didSet { d.set(overlayDim, forKey: K.dim) } }
     @Published var showHotkeys: Bool { didSet { d.set(showHotkeys, forKey: K.showHotkeys) } }
+    /// Width of the Split / Gallery player, before the overlay's scale.
+    @Published var playerSize: Double { didSet { d.set(playerSize, forKey: K.playerSize) } }
 
     var accentColor: Color {
         get { Color(hex: accentHex) }
@@ -253,7 +256,7 @@ final class Settings: ObservableObject {
             K.fps: 60, K.quality: Quality.high.rawValue, K.codec: VideoCodec.h264.rawValue,
             K.resolution: 0, K.cursor: true, K.sysAudio: true, K.mic: false, K.mixMic: true,
             K.replay: 120, K.startReplay: true, K.cleanup: false, K.cleanupDays: 14,
-            K.layout: OverlayLayout.panes.rawValue, K.accent: Int(Theme.defaultAccent), K.dim: 0.6, K.showHotkeys: true,
+            K.layout: OverlayLayout.panes.rawValue, K.accent: Int(Theme.defaultAccent), K.dim: 0.6, K.showHotkeys: true, K.playerSize: Theme.defaultPlayerSize,
         ])
         displayID = UInt32(clamping: d.integer(forKey: K.display))
         captureAppID = d.string(forKey: K.appID) ?? ""
@@ -275,6 +278,7 @@ final class Settings: ObservableObject {
         accentHex = UInt32(clamping: d.integer(forKey: K.accent)) & 0xFFFFFF
         overlayDim = min(max(d.double(forKey: K.dim), 0), 0.9)
         showHotkeys = d.bool(forKey: K.showHotkeys)
+        playerSize = min(max(d.double(forKey: K.playerSize), Theme.playerSizeRange.lowerBound), Theme.playerSizeRange.upperBound)
         outputDirectory = d.string(forKey: K.output).map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0].appendingPathComponent("Rewind")
         if let data = d.data(forKey: K.hotkeys),

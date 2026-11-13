@@ -4,7 +4,7 @@
 
 A ShadowPlay-style screen recorder for macOS. Rewind keeps the last few minutes of your screen in memory so you can save a clip **after** something cool happens, and it can also do regular recordings and screenshots. It's inspired by [gpu-screen-recorder](https://git.dec05eba.com/gpu-screen-recorder/about/) and its UI on Linux.
 
-![Rewind overlay over a game](docs/overlay.png)
+![Rewind overlay (Split layout) over a game](docs/overlay.png)
 
 ## Features
 
@@ -16,7 +16,7 @@ A ShadowPlay-style screen recorder for macOS. Rewind keeps the last few minutes 
 - **Audio.** System audio and/or microphone. By default your mic is mixed into the main track so clips play correctly everywhere; turn that off to keep them as separate tracks for editing.
 - **Auto-cleanup** (optional, off by default). Moves clips and screenshots older than a set number of days (14 by default) to the Trash. Only Rewind's own files are touched.
 - **Preview clips in the overlay.** Your newest clip is loaded in the overlay's player as soon as it opens, with the latest clips and screenshots as thumbnails under it. Click one to play it right in the overlay (Space plays or pauses, ← → step a frame), show it in Finder, or move it to the Trash. Clicking a "saved" notice opens the clip there too.
-- **In-game overlay** (⌥Z) with two layouts: two panes (actions beside a player showing your newest clip) or a Classic ShadowPlay-style bar with a Gallery drop-down. Pick the accent color from presets or the color wheel in Settings → Overlay. Works over fullscreen apps. Rewind's own windows never appear in your clips.
+- **In-game overlay** (⌥Z) with three layouts: **Classic** (ShadowPlay-style), **Tiles** (big buttons with your clips below) and **Split** (actions beside a player showing your newest clip). Pick the accent color from presets or the color wheel in Settings → Overlay. Works over fullscreen apps. Rewind's own windows never appear in your clips.
 - **Global hotkeys** that work while a game has focus, and can be changed in Settings.
 
 <p>

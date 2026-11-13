@@ -30,7 +30,9 @@ enum Theme {
 
     // Two-pane overlay: width of the actions pane and of the clip pane (before scaling).
     static let actionsWidth: CGFloat = 215
-    static let clipPaneWidth: CGFloat = 430
+    // Player width (before scaling) is set in Settings → Overlay → Player size; these are its range.
+    static let playerSizeRange: ClosedRange<Double> = 400...1000
+    static let defaultPlayerSize: Double = 600
 
     // Text
     static let brand = "Rewind"
@@ -68,13 +70,22 @@ extension Color {
 }
 
 /// Overlay layouts, chosen in Settings → Overlay.
+/// The raw values are what's saved; "panes" is kept for Split so existing settings carry over.
 enum OverlayLayout: String, CaseIterable, Identifiable {
-    case panes, classic
+    case classic, tiles, panes
     var id: String { rawValue }
+    var name: String {
+        switch self {
+        case .classic: "Classic"
+        case .tiles: "Tiles"
+        case .panes: "Split"
+        }
+    }
     var label: String {
         switch self {
-        case .panes: "Two panes (actions + player)"
-        case .classic: "Classic (ShadowPlay-style bar)"
+        case .classic: "Classic (ShadowPlay-style)"
+        case .tiles: "Tiles (big buttons, clips below)"
+        case .panes: "Split (actions beside a player)"
         }
     }
 }
