@@ -39,8 +39,12 @@ Rewind lives in the notification area (system tray). Click its icon for the menu
 
 ## Install
 
-1. Download `Rewind-<version>-Windows-x64.zip` (or `-arm64` for ARM PCs) from [Releases](../../../releases) and unzip it anywhere.
-2. Run **Rewind.exe**. The app isn't code-signed, so the first time Windows SmartScreen may say it protected your PC: click **More info → Run anyway**.
+Download from [Releases](../../../releases), either:
+
+- **Installer:** `Rewind-<version>-Windows-x64-Setup.exe` (or `-arm64-Setup.exe` for ARM PCs). It installs for your user only, so no admin prompt, and adds Rewind to the Start menu. Remove it from Settings → Apps; your settings and clips are kept. Running a newer installer upgrades in place, quitting Rewind first (a recording in progress is saved).
+- **Portable:** `Rewind-<version>-Windows-x64.zip` (or `-arm64`). Unzip it anywhere and run **Rewind.exe**.
+
+Neither is code-signed, so the first time Windows SmartScreen may say it protected your PC: click **More info → Run anyway**.
 
 No permissions are needed for screen capture. To record your microphone, desktop apps must be allowed to use it (Settings → Privacy & security → Microphone); Rewind tells you if they aren't.
 
@@ -65,10 +69,10 @@ Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download). Nothing else:
 ```powershell
 .\build.ps1              # builds build\Rewind.exe for this PC (needs the .NET 10 Desktop Runtime)
 .\build.ps1 -SelfTest    # ...and runs the pipeline self-test
-.\release.ps1 1.3.0      # self-contained single-file x64 + ARM64 zips in dist\
+.\release.ps1 1.3.0      # self-contained single-file x64 + ARM64 zips and installers in dist\
 ```
 
-Or simply `dotnet run` from this folder.
+Or simply `dotnet run` from this folder. The installers need [Inno Setup](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`); their script is [`installer/Rewind.iss`](installer/Rewind.iss). Without it, `release.ps1` builds only the zips.
 
 To check the capture → encode → replay → MP4 pipeline without recording the screen (it drives the GPU colour converter and hardware encoder with synthetic frames and audio, writes clips and recordings, then decodes them and measures A/V sync):
 
