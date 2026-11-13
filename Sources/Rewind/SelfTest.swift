@@ -17,7 +17,7 @@ enum SelfTest {
         let router = MediaRouter()
         router.replay.duration = 3
         router.bufferReplay = true
-        let recorder = LiveRecorder(url: recURL, tracks: [.system])
+        let recorder = LiveRecorder(url: recURL, tracks: [.system, .mic])
         router.recorder = recorder
 
         let encoder: VideoEncoder
@@ -50,8 +50,10 @@ enum SelfTest {
 
             while Double(audioFrame) / 48_000 < Double(i + 1) / Double(fps) {
                 let apts = base + CMTime(value: audioFrame, timescale: 48_000)
-                if let s = makeAudio(fmt: afmt!, frames: chunk, startFrame: audioFrame, pts: apts)?.deepCopyAudio() {
+                if let s = makeAudio(fmt: afmt!, frames: chunk, startFrame: audioFrame, pts: apts, hz: 440)?.deepCopyAudio(),
+                   let m = makeAudio(fmt: afmt!, frames: chunk, startFrame: audioFrame, pts: apts, hz: 660)?.deepCopyAudio() {
                     router.audio(s, .system)
+                    router.audio(m, .mic)
                 } else { print("FAIL audio copy"); return 1 }
                 audioFrame += Int64(chunk)
             }
@@ -76,7 +78,18 @@ enum SelfTest {
         if failed { return 1 }
 
         print(String(format: "buffered %.2fs (replay length 3s)", buffered))
-        for url in [clipURL, recURL] { if !inspect(url) { failed = true } }
+        for url in [clipURL, recURL] { if !inspect(url, audioTracks: 2) { failed = true } }
+
+        // Mixdown: both files should end up with one audio track, same length, in sync.
+        for url in [clipURL, recURL] {
+            let sem = DispatchSemaphore(value: 0)
+            nonisolated(unsafe) var mixError: Error?
+            Task { do { try await AudioMixdown.mixIfNeeded(url) } catch { mixError = error }; sem.signal() }
+            sem.wait()
+            if let mixError { print("FAIL mixdown \(url.lastPathComponent): \(mixError)"); failed = true; continue }
+            print("after mixdown:", terminator: " ")
+            if !inspect(url, audioTracks: 1) { failed = true }
+        }
         return failed ? 1 : 0
     }
 
@@ -90,13 +103,13 @@ enum SelfTest {
         }
     }
 
-    private static func makeAudio(fmt: CMAudioFormatDescription, frames: Int, startFrame: Int64, pts: CMTime) -> CMSampleBuffer? {
+    private static func makeAudio(fmt: CMAudioFormatDescription, frames: Int, startFrame: Int64, pts: CMTime, hz: Float) -> CMSampleBuffer? {
         let abl = AudioBufferList.allocate(maximumBuffers: 2)
         defer { free(abl.unsafeMutablePointer) }
         var storage: [UnsafeMutablePointer<Float>] = []
         for ch in 0..<2 {
             let p = UnsafeMutablePointer<Float>.allocate(capacity: frames)
-            for n in 0..<frames { p[n] = 0.2 * sin(2 * .pi * 440 * Float(startFrame + Int64(n)) / 48_000) }
+            for n in 0..<frames { p[n] = 0.2 * sin(2 * .pi * hz * Float(startFrame + Int64(n)) / 48_000) }
             storage.append(p)
             abl[ch] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(frames * 4), mData: p)
         }
@@ -111,7 +124,7 @@ enum SelfTest {
         return sb
     }
 
-    private static func inspect(_ url: URL) -> Bool {
+    private static func inspect(_ url: URL, audioTracks: Int) -> Bool {
         let sem = DispatchSemaphore(value: 0)
         var ok = false
         Task {
@@ -128,10 +141,13 @@ enum SelfTest {
                     while out.copyNextSampleBuffer() != nil { frames += 1 }
                     if reader.status == .failed { throw reader.error! }
                 }
+                var audioDur = 0.0, videoDur = 0.0
+                if let at = a.first { audioDur = try await at.load(.timeRange).duration.seconds }
+                if let vt = v.first { videoDur = try await vt.load(.timeRange).duration.seconds }
                 let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
-                print(String(format: "%@: %.2fs, %d video track(s), %d decoded frames, %d audio track(s), %d KB",
-                             url.lastPathComponent, dur, v.count, frames, a.count, size / 1024))
-                ok = v.count == 1 && a.count == 1 && frames > 0 && dur > 0.5
+                print(String(format: "%@: %.2fs, %d video track(s), %d decoded frames, %d audio track(s) (audio %.2fs / video %.2fs), %d KB",
+                             url.lastPathComponent, dur, v.count, frames, a.count, audioDur, videoDur, size / 1024))
+                ok = v.count == 1 && a.count == audioTracks && frames > 0 && dur > 0.5 && abs(audioDur - videoDur) < 0.25
             } catch { print("FAIL inspect \(url.lastPathComponent): \(error)") }
             sem.signal()
         }

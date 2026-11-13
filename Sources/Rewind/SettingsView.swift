@@ -18,6 +18,8 @@ final class SettingsWindow {
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        // Don't let the first control grab focus and scroll the form away from the top.
+        DispatchQueue.main.async { [weak window] in window?.makeFirstResponder(nil) }
     }
 }
 
@@ -30,6 +32,7 @@ struct SettingsView: View {
     @ObservedObject private var s = Settings.shared
     @ObservedObject private var c = Controller.shared
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var runningApps = AppTarget.pickable()
 
     private var displays: [DisplayOption] {
         [DisplayOption(id: 0, name: "Main display")] + NSScreen.screens.compactMap { screen in
@@ -51,8 +54,40 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker("Capture", selection: appSelection) {
+                    Label("Entire display", systemImage: "display").tag("")
+                    Divider()
+                    ForEach(runningApps, id: \.processIdentifier) { app in
+                        Label {
+                            Text(app.localizedName ?? "Unknown app")
+                        } icon: {
+                            Image(nsImage: smallIcon(app.icon))
+                        }
+                        .tag(AppTarget.key(for: app))
+                    }
+                    if !s.captureAppID.isEmpty, !runningApps.contains(where: { AppTarget.key(for: $0) == s.captureAppID }) {
+                        Divider()
+                        Text("\(s.captureAppName) (not running)").tag(s.captureAppID)
+                    }
+                }
+            } header: {
+                Text("What to capture")
+            } footer: {
+                Text(s.captureAppID.isEmpty
+                     ? "Records everything on the display."
+                     : "Records only \(s.captureAppName)'s windows and sound. While it isn't running, Rewind records the whole display and switches over when it opens.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didLaunchApplicationNotification)) { _ in
+                runningApps = AppTarget.pickable()
+            }
+            .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didTerminateApplicationNotification)) { _ in
+                runningApps = AppTarget.pickable()
+            }
+
             Section("Video") {
-                Picker("Display", selection: $s.displayID) {
+                Picker(s.captureAppID.isEmpty ? "Display" : "Fallback display", selection: $s.displayID) {
                     ForEach(displays) { Text($0.name).tag($0.id) }
                 }
                 Picker("Resolution", selection: $s.resolution) {
@@ -73,11 +108,14 @@ struct SettingsView: View {
             Section {
                 Toggle("Record system audio", isOn: $s.systemAudio)
                 Toggle("Record microphone", isOn: $s.microphone)
+                Toggle("Mix microphone into the main track", isOn: $s.mixMicrophone)
+                    .disabled(!(s.microphone && s.systemAudio))
             } header: {
                 Text("Audio")
             } footer: {
-                Text("System audio and the microphone are saved as separate audio tracks.")
-                    .font(.caption).foregroundStyle(.secondary)
+                if !audioFooter.isEmpty {
+                    Text(audioFooter).font(.caption).foregroundStyle(.secondary)
+                }
             }
 
             Section {
@@ -131,7 +169,30 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .defaultScrollAnchor(.top)
+        .scrollPosition(id: .constant(nil as String?), anchor: .top)
         .frame(width: 520, height: 680)
+    }
+
+    private var audioFooter: String {
+        guard s.microphone && s.systemAudio else { return "" }
+        return s.mixMicrophone
+            ? "Game sound and your voice share one track, so clips play correctly everywhere (VLC, browsers, Discord, phones)."
+            : "Game sound and your voice are saved as separate tracks, handy for editing. Some players only play the first one."
+    }
+
+    private var appSelection: Binding<String> {
+        Binding(get: { s.captureAppID }, set: { key in
+            s.captureAppName = runningApps.first { AppTarget.key(for: $0) == key }?.localizedName
+                ?? (key == s.captureAppID ? s.captureAppName : "")
+            s.captureAppID = key
+        })
+    }
+
+    private func smallIcon(_ image: NSImage?) -> NSImage {
+        let img = (image?.copy() as? NSImage) ?? NSImage(systemSymbolName: "app", accessibilityDescription: nil)!
+        img.size = NSSize(width: 16, height: 16)
+        return img
     }
 
     private func chooseFolder() {

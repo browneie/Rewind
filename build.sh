@@ -10,6 +10,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Rewind "$APP/Contents/MacOS/Rewind"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # A stable signing identity keeps the Screen Recording permission across rebuilds.
 # Ad-hoc signing ("-") works too, but macOS will ask for permission again after every build.

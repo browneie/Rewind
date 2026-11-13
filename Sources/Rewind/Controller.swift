@@ -19,6 +19,8 @@ final class Controller: ObservableObject {
     private let engine = CaptureEngine()
     private var runningSignature: CaptureSignature?
     private var opChain: Task<Void, Never>?
+    private var retargetWork: DispatchWorkItem?
+    private var workspaceObservers: [NSObjectProtocol] = []
 
     init() {
         let router = self.router
@@ -26,6 +28,28 @@ final class Controller: ObservableObject {
         engine.onAudio = { router.audio($0, $1) }
         engine.onStop = { error in Task { @MainActor in Controller.shared.captureDied(error) } }
         router.replay.duration = Double(settings.replaySeconds)
+
+        // Retarget when the chosen app opens or quits.
+        let nc = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+            workspaceObservers.append(nc.addObserver(forName: name, object: nil, queue: .main) { note in
+                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+                let key = AppTarget.key(for: app)
+                MainActor.assumeIsolated {
+                    let c = Controller.shared
+                    guard !c.settings.captureAppID.isEmpty, key == c.settings.captureAppID else { return }
+                    // Give a launching app a moment to open its window.
+                    c.scheduleRetarget(after: name == NSWorkspace.didLaunchApplicationNotification ? 3 : 0.5)
+                }
+            })
+        }
+    }
+
+    private func scheduleRetarget(after delay: Double) {
+        retargetWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.settingsChanged() }
+        retargetWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     // MARK: Actions
@@ -51,8 +75,9 @@ final class Controller: ObservableObject {
         replayActive = true
         reconcile { [weak self] ok in
             guard let self, ok, self.replayActive else { return }
+            let what = self.engine.capturedApp.map { "\($0) · " } ?? ""
             Toast.show("Instant Replay is on",
-                       "Keeping the last \(formatDuration(Double(self.settings.replaySeconds))) · \(self.settings.hotkey(.saveReplay).display) to save",
+                       "\(what)Keeping the last \(formatDuration(Double(self.settings.replaySeconds))) · \(self.settings.hotkey(.saveReplay).display) to save",
                        icon: "arrow.counterclockwise.circle.fill", tint: .green)
         }
     }
@@ -78,10 +103,12 @@ final class Controller: ObservableObject {
             return
         }
         guard let url = makeOutputURL(prefix: "Replay", ext: "mp4") else { return }
+        let mix = settings.mixMicrophone
         ClipWriter.write(snap, to: url) { result in
             Task { @MainActor in
                 switch result {
                 case .success(let length):
+                    await Controller.mixDown(url, enabled: mix)
                     Toast.show("Replay saved", "\(formatDuration(length)) · \(url.lastPathComponent)",
                                icon: "checkmark.circle.fill", tint: .green) { reveal(url) }
                 case .failure(let error):
@@ -116,10 +143,12 @@ final class Controller: ObservableObject {
         router.recorder = nil
         recording = false
         recordingStart = nil
+        let mix = settings.mixMicrophone
         rec.finish { result in
             Task { @MainActor in
                 switch result {
                 case .success(let length):
+                    await Controller.mixDown(rec.url, enabled: mix)
                     Toast.show("Recording saved", "\(formatDuration(length)) · \(rec.url.lastPathComponent)",
                                icon: "checkmark.circle.fill", tint: .green) { reveal(rec.url) }
                 case .failure(let error):
@@ -130,12 +159,24 @@ final class Controller: ObservableObject {
         reconcile() // stops capture if replay is off, or applies settings that changed mid-recording
     }
 
+    /// Folds the mic track into the main one when that setting is on. Keeps separate tracks if it fails.
+    static func mixDown(_ url: URL, enabled: Bool) async {
+        guard enabled else { return }
+        do {
+            try await AudioMixdown.mixIfNeeded(url)
+        } catch {
+            Toast.show("Kept separate audio tracks", "Mixing failed: \(error.localizedDescription)",
+                       icon: "exclamationmark.triangle.fill", tint: .orange)
+            try? await Task.sleep(for: .seconds(2))
+        }
+    }
+
     func screenshot() {
         guard let url = makeOutputURL(prefix: "Screenshot", ext: "png") else { return }
-        let displayID = settings.displayID, cursor = settings.showCursor
+        let displayID = settings.displayID, cursor = settings.showCursor, appID = settings.captureAppID
         Task {
             do {
-                try await CaptureEngine.screenshot(displayID: displayID, showCursor: cursor, to: url)
+                try await CaptureEngine.screenshot(displayID: displayID, appID: appID, showCursor: cursor, to: url)
                 Toast.show("Screenshot saved", url.lastPathComponent, icon: "camera.fill", tint: .blue) { reveal(url) }
             } catch {
                 Toast.error("Screenshot failed", error)
@@ -178,22 +219,57 @@ final class Controller: ObservableObject {
         if isCapturing {
             // Don't restart mid-recording; changed settings apply once it stops.
             if sig == runningSignature || recording { return true }
+            let previous = runningSignature
             await engine.stop()
             markStopped()
             router.replay.clear()
-            Toast.show("Capture settings updated", "The replay buffer was restarted.", icon: "gearshape.fill", tint: .blue)
+            if previous?.appRunning == sig.appRunning || sig.appID.isEmpty {
+                Toast.show("Capture settings updated", "The replay buffer was restarted.", icon: "gearshape.fill", tint: .blue)
+            }
         }
         do {
             try await engine.start(sig)
             isCapturing = true
             runningSignature = sig
             captureInfo = engine.info
+            announceTarget(sig)
             return true
         } catch {
             reportStartError(error)
             failAll()
             return false
         }
+    }
+
+    /// Says what's being captured when an app was chosen, and retries if its window wasn't up yet.
+    private func announceTarget(_ sig: CaptureSignature) {
+        guard !sig.appID.isEmpty else { return }
+        let name = sig.appName.isEmpty ? "The chosen app" : sig.appName
+        if let app = engine.capturedApp {
+            retargetAttempts = 0
+            Toast.show("Capturing \(app)", "Only \(app)'s windows and sound are recorded.",
+                       icon: "app.badge.checkmark", tint: Theme.accent)
+        } else if sig.appRunning {
+            // Running but no window on screen yet: try again shortly.
+            scheduleRetargetForce()
+        } else {
+            Toast.show("\(name) isn't running", "Capturing the whole display until it opens.",
+                       icon: "display", tint: .orange)
+        }
+    }
+
+    private var retargetAttempts = 0
+    private func scheduleRetargetForce() {
+        guard retargetAttempts < 10 else { retargetAttempts = 0; return }
+        retargetAttempts += 1
+        retargetWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isCapturing, !self.recording, self.engine.capturedApp == nil else { return }
+            self.runningSignature = nil // forces a restart on the next reconcile
+            self.reconcile()
+        }
+        retargetWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
     }
 
     private func markStopped() {

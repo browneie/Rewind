@@ -17,20 +17,51 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
     private let videoQueue = DispatchQueue(label: "rewind.capture.video", qos: .userInteractive)
     private let audioQueue = DispatchQueue(label: "rewind.capture.audio", qos: .userInteractive)
 
-    /// The chosen display, with Rewind's own windows (overlay, toasts) left out of the picture.
-    static func filter(for displayID: UInt32) async throws -> SCContentFilter {
+    struct Target {
+        let filter: SCContentFilter
+        /// Name of the app being captured, or nil when capturing the whole display.
+        let appName: String?
+    }
+
+    /// What to capture. With an app chosen and running: only that app's windows (and audio), on the display
+    /// where its biggest window is. Otherwise the chosen display, with Rewind's own windows (overlay,
+    /// toasts) left out of the picture.
+    static func target(displayID: UInt32, appID: String) async throws -> Target {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         let wanted = displayID == 0 ? CGMainDisplayID() : displayID
-        guard let display = content.displays.first(where: { $0.displayID == wanted }) ?? content.displays.first else {
+        guard let chosenDisplay = content.displays.first(where: { $0.displayID == wanted }) ?? content.displays.first else {
             throw RewindError("No display found to capture.")
+        }
+        if !appID.isEmpty,
+           let app = content.applications.first(where: {
+               AppTarget.key(bundleID: $0.bundleIdentifier, name: $0.applicationName) == appID
+           }) {
+            let windows = content.windows.filter {
+                $0.owningApplication?.processID == app.processID && $0.isOnScreen && $0.frame.width > 50 && $0.frame.height > 50
+            }
+            if let biggest = windows.max(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }) {
+                let center = CGPoint(x: biggest.frame.midX, y: biggest.frame.midY)
+                let display = content.displays.first { $0.frame.contains(center) } ?? chosenDisplay
+                // Include every process with the same bundle ID / name (e.g. helper processes).
+                let apps = content.applications.filter {
+                    AppTarget.key(bundleID: $0.bundleIdentifier, name: $0.applicationName) == appID
+                }
+                return Target(filter: SCContentFilter(display: display, including: apps, exceptingWindows: []),
+                              appName: app.applicationName)
+            }
         }
         let pid = ProcessInfo.processInfo.processIdentifier
         let mine = content.applications.filter { $0.processID == pid }
-        return SCContentFilter(display: display, excludingApplications: mine, exceptingWindows: [])
+        return Target(filter: SCContentFilter(display: chosenDisplay, excludingApplications: mine, exceptingWindows: []),
+                      appName: nil)
     }
 
+    /// Name of the app being captured right now, or nil for the whole display.
+    private(set) var capturedApp: String?
+
     func start(_ sig: CaptureSignature) async throws {
-        let filter = try await Self.filter(for: sig.displayID)
+        let target = try await Self.target(displayID: sig.displayID, appID: sig.appID)
+        let filter = target.filter
         let scale = CGFloat(filter.pointPixelScale)
         let native = CGSize(width: filter.contentRect.width * scale, height: filter.contentRect.height * scale)
         let size = CaptureMath.outputSize(native: native, resolution: sig.resolution, codec: sig.codec)
@@ -70,7 +101,8 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
             enc.invalidate()
             throw error
         }
-        info = "\(Int(size.width))×\(Int(size.height)) · \(sig.fps) fps · \(sig.codec.short) · \(bitrate / 1_000_000) Mbps"
+        capturedApp = target.appName
+        info = (target.appName.map { "\($0) · " } ?? "") + "\(Int(size.width))×\(Int(size.height)) · \(sig.fps) fps · \(sig.codec.short) · \(bitrate / 1_000_000) Mbps"
     }
 
     func stop() async {
@@ -82,6 +114,7 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
         encoder = nil
         enc?.invalidate()
         info = ""
+        capturedApp = nil
     }
 
     func forceKeyframe() { encoder?.forceKeyframe() }
@@ -117,8 +150,8 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
 
     // MARK: Screenshots
 
-    static func screenshot(displayID: UInt32, showCursor: Bool, to url: URL) async throws {
-        let filter = try await filter(for: displayID)
+    static func screenshot(displayID: UInt32, appID: String, showCursor: Bool, to url: URL) async throws {
+        let filter = try await target(displayID: displayID, appID: appID).filter
         let scale = CGFloat(filter.pointPixelScale)
         let cfg = SCStreamConfiguration()
         cfg.width = Int(filter.contentRect.width * scale)

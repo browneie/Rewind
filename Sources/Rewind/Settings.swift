@@ -53,6 +53,11 @@ enum AudioTrack: Int, CaseIterable {
 
 struct CaptureSignature: Equatable {
     var displayID: UInt32
+    /// "" = whole display; otherwise an app key from `AppTarget.key(for:)`.
+    var appID: String
+    var appName: String
+    /// Whether that app is running right now (so capture retargets when it opens or quits).
+    var appRunning: Bool
     var fps: Int
     var quality: Quality
     var codec: VideoCodec
@@ -199,9 +204,13 @@ final class Settings: ObservableObject {
         static let resolution = "resolution", cursor = "showCursor", sysAudio = "systemAudio", mic = "microphone"
         static let replay = "replaySeconds", startReplay = "startReplayOnLaunch", output = "outputDirectory"
         static let hotkeys = "hotkeys"
+        static let appID = "captureAppID", appName = "captureAppName"
+        static let mixMic = "mixMicrophone"
     }
 
     @Published var displayID: UInt32 { didSet { d.set(Int(displayID), forKey: K.display) } }
+    @Published var captureAppID: String { didSet { d.set(captureAppID, forKey: K.appID) } }
+    @Published var captureAppName: String { didSet { d.set(captureAppName, forKey: K.appName) } }
     @Published var fps: Int { didSet { d.set(fps, forKey: K.fps) } }
     @Published var quality: Quality { didSet { d.set(quality.rawValue, forKey: K.quality) } }
     @Published var codec: VideoCodec { didSet { d.set(codec.rawValue, forKey: K.codec) } }
@@ -209,6 +218,7 @@ final class Settings: ObservableObject {
     @Published var showCursor: Bool { didSet { d.set(showCursor, forKey: K.cursor) } }
     @Published var systemAudio: Bool { didSet { d.set(systemAudio, forKey: K.sysAudio) } }
     @Published var microphone: Bool { didSet { d.set(microphone, forKey: K.mic) } }
+    @Published var mixMicrophone: Bool { didSet { d.set(mixMicrophone, forKey: K.mixMic) } }
     @Published var replaySeconds: Int { didSet { d.set(replaySeconds, forKey: K.replay) } }
     @Published var startReplayOnLaunch: Bool { didSet { d.set(startReplayOnLaunch, forKey: K.startReplay) } }
     @Published var outputDirectory: URL { didSet { d.set(outputDirectory.path, forKey: K.output) } }
@@ -219,10 +229,12 @@ final class Settings: ObservableObject {
     init() {
         d.register(defaults: [
             K.fps: 60, K.quality: Quality.high.rawValue, K.codec: VideoCodec.h264.rawValue,
-            K.resolution: 0, K.cursor: true, K.sysAudio: true, K.mic: false,
+            K.resolution: 0, K.cursor: true, K.sysAudio: true, K.mic: false, K.mixMic: true,
             K.replay: 120, K.startReplay: true,
         ])
         displayID = UInt32(clamping: d.integer(forKey: K.display))
+        captureAppID = d.string(forKey: K.appID) ?? ""
+        captureAppName = d.string(forKey: K.appName) ?? ""
         fps = d.integer(forKey: K.fps)
         quality = Quality(rawValue: d.string(forKey: K.quality) ?? "") ?? .high
         codec = VideoCodec(rawValue: d.string(forKey: K.codec) ?? "") ?? .h264
@@ -230,6 +242,7 @@ final class Settings: ObservableObject {
         showCursor = d.bool(forKey: K.cursor)
         systemAudio = d.bool(forKey: K.sysAudio)
         microphone = d.bool(forKey: K.mic)
+        mixMicrophone = d.bool(forKey: K.mixMic)
         replaySeconds = d.integer(forKey: K.replay)
         startReplayOnLaunch = d.bool(forKey: K.startReplay)
         outputDirectory = d.string(forKey: K.output).map { URL(fileURLWithPath: $0) }
@@ -247,7 +260,35 @@ final class Settings: ObservableObject {
     func resetHotkeys() { hotkeys = [:] }
 
     var captureSignature: CaptureSignature {
-        CaptureSignature(displayID: displayID, fps: fps, quality: quality, codec: codec, resolution: resolution,
+        CaptureSignature(displayID: displayID, appID: captureAppID, appName: captureAppName,
+                         appRunning: !captureAppID.isEmpty && AppTarget.isRunning(captureAppID), fps: fps, quality: quality, codec: codec, resolution: resolution,
                          showCursor: showCursor, systemAudio: systemAudio, microphone: microphone)
+    }
+}
+
+// MARK: - App targets
+
+/// Identifies an app to capture. Uses the bundle ID when there is one; apps without one
+/// (some games and Java processes) are matched by name.
+enum AppTarget {
+    static func key(bundleID: String?, name: String?) -> String {
+        if let b = bundleID, !b.isEmpty { return b }
+        return "name:" + (name ?? "")
+    }
+
+    static func key(for app: NSRunningApplication) -> String {
+        key(bundleID: app.bundleIdentifier, name: app.localizedName)
+    }
+
+    static func isRunning(_ key: String) -> Bool {
+        NSWorkspace.shared.runningApplications.contains { AppTarget.key(for: $0) == key }
+    }
+
+    /// Apps with a normal UI, for the picker (Rewind itself left out).
+    static func pickable() -> [NSRunningApplication] {
+        let me = ProcessInfo.processInfo.processIdentifier
+        return NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular && $0.processIdentifier != me }
+            .sorted { ($0.localizedName ?? "").localizedCaseInsensitiveCompare($1.localizedName ?? "") == .orderedAscending }
     }
 }
