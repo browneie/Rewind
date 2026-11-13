@@ -69,12 +69,6 @@ To check the capture → encode → replay → MP4 pipeline without screen permi
 .build/release/Rewind --selftest /tmp/rewind-test
 ```
 
-To redraw the app icon after changing [`scripts/make-icon.swift`](scripts/make-icon.swift):
-
-```bash
-swift scripts/make-icon.swift && iconutil -c icns build/AppIcon.iconset -o Resources/AppIcon.icns
-```
-
 ### Changing the look
 
 Overlay colors, size, roundness, opacity and text live in [`Sources/Rewind/Theme.swift`](Sources/Rewind/Theme.swift). There's also an interactive designer at [`design/overlay-mockup.html`](design/overlay-mockup.html): open it in a browser, tweak the design, and copy the exported values into `Theme.swift`.
