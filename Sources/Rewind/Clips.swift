@@ -33,7 +33,7 @@ struct ClipItem: Identifiable, Hashable {
     }
     var icon: String {
         switch kind {
-        case .replay: "arrow.counterclockwise"
+        case .replay: "gobackward"
         case .recording: "record.circle"
         case .screenshot: "camera"
         case .app: "gamecontroller.fill"

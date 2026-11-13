@@ -151,7 +151,7 @@ struct OverlayView: View {
 
     private var replayTile: some View {
         let on = c.replayActive
-        return IconTile(icon: "arrow.counterclockwise", title: Theme.replayTitle, tint: Theme.replay,
+        return IconTile(icon: ReplayIcon.name(seconds: s.replaySeconds), title: Theme.replayTitle, tint: Theme.replay,
                         badge: on ? "ON" : nil,
                         hint: on ? s.hotkey(.saveReplay) : s.hotkey(.toggleReplay),
                         caption: on ? "Save last \(formatDuration(c.bufferedSeconds))" : "Click to turn on",
@@ -209,7 +209,7 @@ struct OverlayView: View {
                 VStack(spacing: Theme.s(8)) {
                     HStack(alignment: .top, spacing: Theme.s(8)) {
                         HStack(spacing: Theme.s(6)) {
-                            ClassicTile(title: Theme.replayTitle, icon: "arrow.counterclockwise", tint: Theme.replay,
+                            ClassicTile(title: Theme.replayTitle, icon: ReplayIcon.name(seconds: s.replaySeconds), tint: Theme.replay,
                                         status: c.replayActive ? "On · \(formatDuration(c.bufferedSeconds))" : "Off", on: c.replayActive,
                                         progress: c.replayActive ? c.bufferedSeconds / Double(max(s.replaySeconds, 1)) : nil,
                                         hover: { hovered = $0 ? .replay : nil },
@@ -317,7 +317,7 @@ struct OverlayView: View {
 
     private var replayRow: some View {
         let on = c.replayActive
-        return ActionRow(icon: "arrow.counterclockwise", title: on ? "Save replay" : Theme.replayTitle, tint: Theme.replay, on: on,
+        return ActionRow(icon: ReplayIcon.name(seconds: s.replaySeconds), title: on ? "Save replay" : Theme.replayTitle, tint: Theme.replay, on: on,
                          hint: on ? s.hotkey(.saveReplay) : s.hotkey(.toggleReplay),
                          caption: on ? "Last \(formatDuration(c.bufferedSeconds)) ready" : "Click to turn on",
                          hoverCaption: on ? "Right-click to turn off" : nil,
@@ -370,8 +370,7 @@ private struct ActionRow: View {
                         .padding(Theme.s(1))
                         .animation(.linear(duration: 0.9), value: progress)
                 }
-                Image(systemName: icon)
-                    .font(.system(size: Theme.s(15), weight: .semibold))
+                IconGlyph(name: icon, size: Theme.s(15), weight: .semibold)
                     .foregroundStyle(on ? tint : .white.opacity(0.9))
             }
             .frame(width: Theme.s(36), height: Theme.s(36))
@@ -438,7 +437,7 @@ private struct ClassicTile: View {
                         .rotationEffect(.degrees(-90))
                         .animation(.linear(duration: 0.9), value: progress)
                 }
-                Image(systemName: icon).font(.system(size: Theme.s(17), weight: .bold)).foregroundStyle(on ? tint : .white)
+                IconGlyph(name: icon, size: Theme.s(17), weight: .bold).foregroundStyle(on ? tint : .white)
             }
             .frame(width: Theme.s(40), height: Theme.s(40))
             .scaleEffect(pressed ? 0.93 : 1)
@@ -543,8 +542,7 @@ private struct IconTile: View {
                         .padding(Theme.s(1.5))
                         .animation(.linear(duration: 0.9), value: progress)
                 }
-                Image(systemName: icon)
-                    .font(.system(size: Theme.s(30), weight: .semibold))
+                IconGlyph(name: icon, size: Theme.s(30), weight: .semibold)
                     .foregroundStyle(on ? tint : .white.opacity(0.9))
             }
             .frame(width: Theme.s(72), height: Theme.s(72))
@@ -683,5 +681,50 @@ struct Chip: View {
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
+    }
+}
+
+/// An SF Symbol, or Rewind's replay icon for names made by `ReplayIcon.name(seconds:)`.
+struct IconGlyph: View {
+    let name: String
+    let size: CGFloat
+    let weight: Font.Weight
+
+    var body: some View {
+        if let seconds = ReplayIcon.seconds(from: name) {
+            ReplayIcon(seconds: seconds, size: size, weight: weight)
+        } else {
+            Image(systemName: name).font(.system(size: size, weight: weight))
+        }
+    }
+}
+
+/// A rewind arrow with the replay length inside it ("30", "2m"), like SF Symbols' gobackward.30 but for any length.
+struct ReplayIcon: View {
+    let seconds: Int
+    let size: CGFloat
+    let weight: Font.Weight
+
+    static func name(seconds: Int) -> String { "rewind.replay:\(seconds)" }
+    static func seconds(from name: String) -> Int? {
+        name.hasPrefix("rewind.replay:") ? Int(name.dropFirst("rewind.replay:".count)) : nil
+    }
+
+    private var label: String {
+        if seconds < 60 { return "\(seconds)" }
+        if seconds % 60 == 0 { return "\(seconds / 60)m" }
+        return formatDuration(Double(seconds))
+    }
+
+    var body: some View {
+        ZStack {
+            Image(systemName: "gobackward").font(.system(size: size, weight: weight))
+            Text(label)
+                .font(.system(size: size * (label.count > 2 ? 0.36 : 0.44), weight: .heavy, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1).minimumScaleFactor(0.6)
+                .frame(width: size * 0.66)
+                .offset(y: size * 0.06)
+        }
     }
 }

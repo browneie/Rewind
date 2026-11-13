@@ -178,7 +178,7 @@ struct SettingsView: View {
                 Picker("Layout", selection: $s.overlayLayout) {
                     ForEach(OverlayLayout.allCases) { Text($0.label).tag($0) }
                 }
-                ColorPicker("Accent color", selection: $s.accentColor, supportsOpacity: false)
+                LabeledContent("Accent color") { AccentColorButton(hex: $s.accentHex) }
                 LabeledContent("Presets") {
                     HStack(spacing: 7) {
                         ForEach(Theme.accentPresets, id: \.hex) { preset in
@@ -208,7 +208,7 @@ struct SettingsView: View {
             } header: {
                 Text("Overlay")
             } footer: {
-                Text("The accent color is used for Instant Replay and highlights. Click the color well for the color wheel. Changes apply the next time the overlay opens.")
+                Text("The accent color is used for Instant Replay, highlights and notifications. Click the swatch for the color wheel, or type a hex code. Changes apply the next time the overlay opens.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

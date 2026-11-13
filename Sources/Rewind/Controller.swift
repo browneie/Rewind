@@ -79,7 +79,7 @@ final class Controller: ObservableObject {
             let hint = self.settings.hotkeyHint(.saveReplay, "to save")
             Toast.show("Instant Replay is on",
                        "\(what)Keeping the last \(formatDuration(Double(self.settings.replaySeconds)))\(hint.isEmpty ? "" : " · " + hint)",
-                       icon: "arrow.counterclockwise.circle.fill", tint: .green)
+                       icon: "arrow.counterclockwise.circle.fill", tint: Theme.accent)
         }
     }
 
@@ -113,7 +113,7 @@ final class Controller: ObservableObject {
                     await Controller.mixDown(url, enabled: mix)
                     ClipLibrary.shared.refreshIfShown()
                     Toast.show("Replay saved", "\(formatDuration(length)) · \(url.lastPathComponent)",
-                               icon: "checkmark.circle.fill", tint: .green) { OverlayController.shared.show(preview: url) }
+                               icon: "checkmark.circle.fill", tint: Theme.accent) { OverlayController.shared.show(preview: url) }
                 case .failure(let error):
                     Toast.error("Couldn't save replay", error)
                 }
@@ -138,7 +138,7 @@ final class Controller: ObservableObject {
             self.engine.forceKeyframe()
             let hint = self.settings.hotkeyHint(.toggleRecording, "to stop")
             Toast.show("Recording started", hint.isEmpty ? nil : hint,
-                       icon: "record.circle.fill", tint: .red)
+                       icon: "record.circle.fill", tint: Theme.record)
         }
     }
 
@@ -155,7 +155,7 @@ final class Controller: ObservableObject {
                     await Controller.mixDown(rec.url, enabled: mix)
                     ClipLibrary.shared.refreshIfShown()
                     Toast.show("Recording saved", "\(formatDuration(length)) · \(rec.url.lastPathComponent)",
-                               icon: "checkmark.circle.fill", tint: .green) { OverlayController.shared.show(preview: rec.url) }
+                               icon: "checkmark.circle.fill", tint: Theme.accent) { OverlayController.shared.show(preview: rec.url) }
                 case .failure(let error):
                     Toast.error("Recording failed", error)
                 }
@@ -183,7 +183,7 @@ final class Controller: ObservableObject {
             do {
                 try await CaptureEngine.screenshot(displayID: displayID, appID: appID, showCursor: cursor, to: url)
                 ClipLibrary.shared.refreshIfShown()
-                Toast.show("Screenshot saved", url.lastPathComponent, icon: "camera.fill", tint: .blue) { OverlayController.shared.show(preview: url) }
+                Toast.show("Screenshot saved", url.lastPathComponent, icon: "camera.fill", tint: Theme.screenshot) { OverlayController.shared.show(preview: url) }
             } catch {
                 Toast.error("Screenshot failed", error)
             }
@@ -263,7 +263,7 @@ final class Controller: ObservableObject {
             markStopped()
             router.replay.clear()
             if previous?.appRunning == sig.appRunning || sig.appID.isEmpty {
-                Toast.show("Capture settings updated", "The replay buffer was restarted.", icon: "gearshape.fill", tint: .blue)
+                Toast.show("Capture settings updated", "The replay buffer was restarted.", icon: "gearshape.fill", tint: Theme.accent)
             }
         }
         do {
