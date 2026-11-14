@@ -139,11 +139,13 @@ sealed class CaptureEngine
             AppName = target.AppName;
             var native = (item.Size.Width, item.Size.Height);
             var size = CaptureMath.OutputSize(native, sig.Resolution, sig.Codec);
-            int bitrate = CaptureMath.Bitrate(size, sig.Fps, sig.Quality, sig.Codec);
+            int bitrate = CaptureMath.Bitrate(size, sig.Fps, sig.Quality, sig.Codec, sig.CustomMbps);
+            // A custom bitrate is used exactly as typed, without the size tuning the presets get.
+            var tuning = sig.Quality == Quality.Custom ? EncoderTuning.For(sig.Codec) with { BitrateFactor = 1 } : null;
             interval = Clock.Second / sig.Fps;
 
             converter = new FrameConverter(gpu, size.W, size.H, sig.Fps);
-            encoder = new VideoEncoder(gpu, size.W, size.H, sig.Fps, sig.Codec, bitrate, f => owner.OnVideo?.Invoke(f));
+            encoder = new VideoEncoder(gpu, size.W, size.H, sig.Fps, sig.Codec, bitrate, f => owner.OnVideo?.Invoke(f), tuning);
 
             poolSize = item.Size;
             pool = Direct3D11CaptureFramePool.CreateFreeThreaded(gpu.WinRTDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, PoolBuffers, poolSize);

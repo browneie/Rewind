@@ -276,98 +276,239 @@ static class ClipTrimmer
 
 // MARK: - Views
 
-/// Row of the latest clips under the overlay's tiles.
-sealed class RecentClipsRow : StackPanel
+/// The overlay's player: the selected clip (newest by default) with Trim, Explorer and Recycle Bin, and the
+/// recent clips underneath. Every layout has one.
+sealed class ClipPane : StackPanel
 {
-    readonly double width;
-    readonly Action<ClipItem> open;
-    readonly Grid row = new();
+    const string PlayHint = "Space to play or pause · ← → to step a frame";
+    const string TrimHint = "Drag the yellow handles, then click Trim. The original is kept.";
+    readonly Action close;
+    readonly Size screen;
+    readonly double width, reservedHeight;
+    readonly bool showsClose;
+    readonly DockPanel header = new() { LastChildFill = true, Margin = new Thickness(0, 0, 0, Theme.S(10)) };
+    readonly Grid stageHost = new();
+    readonly TextBlock hint;
+    readonly StackPanel thumbs = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, Theme.S(10), 0, 0) };
+    // Thumbnails keep one size whatever the player size.
+    readonly double gap = Theme.S(7), thumbW = Theme.S(88);
+    ClipView? view;
+    string? pending;
 
-    public RecentClipsRow(double width, Action<ClipItem> open)
+    public ClipItem? Item => view?.Item;
+    public bool IsTrimming => view?.IsTrimming == true;
+
+    /// `fixedWidth` for Tiles; otherwise Settings → Player size, kept on screen. `reservedWidth` and
+    /// `reservedHeight` are the room the rest of the layout takes, so the pane always fits.
+    public ClipPane(Action close, Size screen, double? fixedWidth, double reservedWidth, double reservedHeight, bool showsClose)
     {
-        this.width = width;
-        this.open = open;
-        Margin = new Thickness(0, 0, 0, Theme.S(18));
-        var label = Theme.Text("Recent clips", 12, FontWeights.SemiBold, Theme.Muted);
-        label.Margin = new Thickness(0, 0, 0, Theme.S(8));
-        Children.Add(label);
-        Children.Add(row);
-        Rebuild();
-        Loaded += (_, _) => { ClipLibrary.Changed -= Rebuild; ClipLibrary.Changed += Rebuild; Rebuild(); };
-        Unloaded += (_, _) => ClipLibrary.Changed -= Rebuild;
+        this.close = close;
+        this.screen = screen;
+        this.reservedHeight = reservedHeight;
+        this.showsClose = showsClose;
+        width = fixedWidth ?? Math.Min(Theme.S(Settings.Shared.PlayerSize),
+            Math.Max(screen.Width - reservedWidth - Theme.S(90), Theme.S(Theme.MinPlayerSize)));
+        hint = Theme.Text(" ", 10, brush: Theme.Muted);
+        hint.Margin = new Thickness(0, Theme.S(10), 0, 0);
+        hint.Width = width;
+        Children.Add(header);
+        Children.Add(stageHost);
+        Children.Add(hint);
+        Children.Add(thumbs);
+        ClipLibrary.Changed += OnLibrary;
+        OnLibrary();
     }
 
-    void Rebuild()
+    /// Selects a clip and plays it; waits for the library if the file isn't there yet.
+    public void Show(string path)
     {
-        row.Children.Clear();
-        row.ColumnDefinitions.Clear();
-        double gap = Theme.S(8), thumbW = (width - gap * (ClipLibrary.Limit - 1)) / ClipLibrary.Limit;
-        if (ClipLibrary.Items.Count == 0)
+        if (File.Exists(path)) Select(ItemFor(path), play: true);
+        else pending = path;
+    }
+
+    static ClipItem ItemFor(string path) =>
+        ClipLibrary.Items.FirstOrDefault(i => string.Equals(i.FilePath, path, StringComparison.OrdinalIgnoreCase))
+        ?? new ClipItem(path, File.GetCreationTime(path));
+
+    void OnLibrary()
+    {
+        if (pending != null && File.Exists(pending))
         {
-            var empty = Theme.Text("Clips and screenshots you save show up here.", 11.5, brush: Theme.Muted);
-            empty.HorizontalAlignment = HorizontalAlignment.Center;
-            empty.VerticalAlignment = VerticalAlignment.Center;
-            row.Children.Add(new Border
-            {
-                Width = width, Height = thumbW * 9 / 16 + Theme.S(20), CornerRadius = new CornerRadius(Theme.S(10)),
-                Background = Theme.Brush(Colors.White, 0.04), Child = empty,
-            });
+            var p = pending;
+            pending = null;
+            Select(ItemFor(p), play: true);
+        }
+        // Loads the newest clip, paused, when nothing is selected or the selection was removed.
+        else if (Item == null || (!ClipLibrary.Items.Contains(Item) && !File.Exists(Item.FilePath)))
+        {
+            if (ClipLibrary.Items.Count > 0) Select(ClipLibrary.Items[0], play: false);
+            else ShowEmpty();
+        }
+        RebuildThumbs();
+    }
+
+    /// Like clicking a thumbnail: the selected clip plays or pauses, another one opens.
+    void Select(ClipItem item, bool play)
+    {
+        if (Item == item)
+        {
+            if (play) view!.TogglePlay();
             return;
         }
-        for (int i = 0; i < ClipLibrary.Limit; i++) row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(thumbW + (i < ClipLibrary.Limit - 1 ? gap : 0)) });
-        for (int i = 0; i < ClipLibrary.Items.Count; i++)
+        view?.Stop();
+        var (duration, size, _, _) = ClipLibrary.Probe(item);
+        if (duration is { } d) ClipLibrary.Durations[item.FilePath] = d;
+        if (size is { } sz) ClipLibrary.Sizes[item.FilePath] = sz;
+        view = new ClipView(item, width, MediaHeight(item), play, RefreshChrome);
+        stageHost.Children.Clear();
+        stageHost.Children.Add(view);
+        RefreshChrome();
+        RebuildThumbs();
+    }
+
+    void ShowEmpty()
+    {
+        view?.Stop();
+        view = null;
+        stageHost.Children.Clear();
+        var message = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        var icon = Icons.Make(Sym.Film, Theme.S(26), Theme.Muted);
+        icon.Margin = new Thickness(0, 0, 0, Theme.S(6));
+        message.Children.Add(icon);
+        message.Children.Add(Theme.Text("Clips and screenshots you save show up here.", 11.5, brush: Theme.Muted));
+        stageHost.Children.Add(ClipView.Stage(width, MediaHeight(null), message));
+        RefreshChrome();
+    }
+
+    /// Height for the pane's width, following the clip's shape within a sane range.
+    double MediaHeight(ClipItem? item)
+    {
+        var natural = item != null && ClipLibrary.Sizes.TryGetValue(item.FilePath, out var s) ? s : (W: 16, H: 9);
+        double aspect = natural.W > 0 && natural.H > 0 ? natural.W / (double)natural.H : 16 / 9.0;
+        // Room left after the rest of the layout, the pane's header, transport, hint line and thumbnails.
+        double room = screen.Height - reservedHeight - Theme.S(190) - thumbW * 9 / 16;
+        return Math.Max(Math.Min(Math.Min(Math.Max(width / aspect, width * 9 / 21), width * 3 / 4), room), Theme.S(140));
+    }
+
+    void RefreshChrome()
+    {
+        header.Children.Clear();
+        var item = Item;
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        if (item != null && view != null)
         {
-            var thumb = new ClipThumb(ClipLibrary.Items[i], thumbW, open) { HorizontalAlignment = HorizontalAlignment.Left };
-            Grid.SetColumn(thumb, i);
-            row.Children.Add(thumb);
+            if (item.IsVideo)
+            {
+                var trim = new Chip(view.IsSaving ? "Saving…" : "Trim", Sym.Scissors, view.BeginTrim);
+                if (view.IsTrimming || view.IsSaving) { trim.IsEnabled = false; trim.Opacity = 0.5; }
+                actions.Children.Add(trim);
+            }
+            actions.Children.Add(new Chip(null, Sym.Folder, () => { var p = item.FilePath; close(); Controller.Reveal(p); })
+                { ToolTip = "Show in Explorer", Margin = new Thickness(Theme.S(8), 0, 0, 0) });
+            actions.Children.Add(new Chip(null, Sym.Trash, () => { view?.Stop(); ClipLibrary.Trash(item); })
+                { ToolTip = "Move to Recycle Bin", Margin = new Thickness(Theme.S(8), 0, 0, 0) });
         }
+        if (showsClose) actions.Children.Add(new CircleButton(Sym.Close, close) { ToolTip = "Close (Esc)", Margin = new Thickness(Theme.S(8), 0, 0, 0) });
+        DockPanel.SetDock(actions, Dock.Right);
+        header.Children.Add(actions);
+
+        if (item != null)
+        {
+            var icon = Icons.Make(item.Icon, Theme.S(13), Theme.Brush(item.Tint));
+            icon.VerticalAlignment = VerticalAlignment.Center;
+            icon.Margin = new Thickness(0, 0, Theme.S(8), 0);
+            DockPanel.SetDock(icon, Dock.Left);
+            header.Children.Add(icon);
+            var titles = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, Theme.S(8), 0) };
+            titles.Children.Add(Theme.Text(item.Title, 13, FontWeights.SemiBold));
+            titles.Children.Add(Theme.Text(Details(item), 10.5, brush: Theme.Muted));
+            header.Children.Add(titles);
+        }
+        else
+        {
+            var title = Theme.Text("Recent clips", 13, FontWeights.SemiBold);
+            title.VerticalAlignment = VerticalAlignment.Center;
+            header.Children.Add(title);
+        }
+        hint.Text = item?.IsVideo == true ? (IsTrimming ? TrimHint : PlayHint) : " ";
+    }
+
+    static string Details(ClipItem item)
+    {
+        var parts = new List<string> { ClipThumb.TimeAgo(item.Date) };
+        if (ClipLibrary.Durations.TryGetValue(item.FilePath, out var d)) parts.Add(Format.Duration(d));
+        if (ClipLibrary.Sizes.TryGetValue(item.FilePath, out var s)) parts.Add($"{s.W}×{s.H}");
+        try { parts.Add(Controller.SizeText(new FileInfo(item.FilePath).Length)); } catch { }
+        return string.Join(" · ", parts);
+    }
+
+    void RebuildThumbs()
+    {
+        thumbs.Children.Clear();
+        int fits = Math.Max(1, (int)((width + gap) / (thumbW + gap)));
+        foreach (var item in ClipLibrary.Items.Take(fits))
+            thumbs.Children.Add(new ClipThumb(item, thumbW, item == Item, i => Select(i, play: true))
+                { Margin = new Thickness(0, 0, gap, 0) });
+        thumbs.Visibility = ClipLibrary.Items.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public void TogglePlay() => view?.TogglePlay();
+    public void Step(int frames) => view?.Step(frames);
+    public void CancelTrim() => view?.CancelTrim();
+    public void ConfirmTrim() => view?.ConfirmTrim();
+
+    public void Stop()
+    {
+        ClipLibrary.Changed -= OnLibrary;
+        view?.Stop();
     }
 }
 
 sealed class ClipThumb : StackPanel
 {
-    public ClipThumb(ClipItem item, double width, Action<ClipItem> open)
+    public ClipThumb(ClipItem item, double width, bool selected, Action<ClipItem> open)
     {
         double height = width * 9 / 16;
-        var radius = new CornerRadius(Theme.S(8));
+        var radius = new CornerRadius(Theme.S(7));
         var picture = new Grid { Width = width, Height = height, ClipToBounds = true };
         picture.Clip = new RectangleGeometry(new Rect(0, 0, width, height), radius.TopLeft, radius.TopLeft);
         picture.Children.Add(new Border { Background = Theme.Brush(Colors.White, 0.06) });
         if (ClipLibrary.Thumbs.TryGetValue(item.FilePath, out var img))
             picture.Children.Add(new Image { Source = img, Stretch = Stretch.UniformToFill, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
         else
-            picture.Children.Add(Icons.Make(item.Icon, Theme.S(16), Theme.Muted));
+            picture.Children.Add(Icons.Make(item.Icon, Theme.S(14), Theme.Muted));
         var hoverShade = new Border { Background = Theme.Brush(Colors.Black, 0.3), Visibility = Visibility.Collapsed };
-        hoverShade.Child = Icons.Make(item.IsVideo ? Sym.Play : Sym.Eye, Theme.S(16), Brushes.White);
+        hoverShade.Child = Icons.Make(item.IsVideo ? Sym.Play : Sym.Eye, Theme.S(14), Brushes.White);
         picture.Children.Add(hoverShade);
-        var badge = new Border
+        picture.Children.Add(new Border
         {
-            Width = Theme.S(16), Height = Theme.S(16), CornerRadius = new CornerRadius(Theme.S(8)), Background = Theme.Brush(Colors.Black, 0.55),
-            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(Theme.S(4)),
-            Child = Icons.Make(item.Icon, Theme.S(8.5), Theme.Brush(item.Tint)),
-        };
-        picture.Children.Add(badge);
+            Width = Theme.S(14), Height = Theme.S(14), CornerRadius = new CornerRadius(Theme.S(7)), Background = Theme.Brush(Colors.Black, 0.55),
+            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(Theme.S(3)),
+            Child = Icons.Make(item.Icon, Theme.S(7.5), Theme.Brush(item.Tint)),
+        });
         if (ClipLibrary.Durations.TryGetValue(item.FilePath, out var dur))
             picture.Children.Add(new Border
             {
-                CornerRadius = new CornerRadius(Theme.S(8)), Background = Theme.Brush(Colors.Black, 0.6), Padding = new Thickness(Theme.S(4), Theme.S(1), Theme.S(4), Theme.S(1)),
-                HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(Theme.S(4)),
-                Child = Theme.Text(Format.Duration(dur), 9, FontWeights.Bold, family: Theme.Mono),
+                CornerRadius = new CornerRadius(Theme.S(7)), Background = Theme.Brush(Colors.Black, 0.6), Padding = new Thickness(Theme.S(3.5), Theme.S(1), Theme.S(3.5), Theme.S(1)),
+                HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(Theme.S(3)),
+                Child = Theme.Text(Format.Duration(dur), 8, FontWeights.Bold, family: Theme.Mono),
             });
-        var frame = new Border { CornerRadius = radius, BorderThickness = new Thickness(1), BorderBrush = Theme.Line, IsHitTestVisible = false };
+        Brush idle = selected ? Theme.Brush(item.Tint) : Theme.Line;
+        var frame = new Border { CornerRadius = radius, BorderThickness = new Thickness(selected ? Theme.S(1.5) : 1), BorderBrush = idle, IsHitTestVisible = false };
         var tile = new Grid();
         tile.Children.Add(picture);
         tile.Children.Add(frame);
         Children.Add(tile);
-        var when = Theme.Text(TimeAgo(item.Date), 10.5, brush: Theme.Muted);
-        when.Margin = new Thickness(0, Theme.S(5), 0, 0);
+        var when = Theme.Text(TimeAgo(item.Date), 9.5, brush: selected ? Brushes.White : Theme.Muted);
+        when.Margin = new Thickness(0, Theme.S(4), 0, 0);
         Children.Add(when);
 
+        Width = width;
         Cursor = Cursors.Hand;
         ToolTip = Path.GetFileName(item.FilePath);
         Background = Brushes.Transparent;
-        MouseEnter += (_, _) => { hoverShade.Visibility = Visibility.Visible; frame.BorderBrush = Theme.Brush(item.Tint, 0.8); };
-        MouseLeave += (_, _) => { hoverShade.Visibility = Visibility.Collapsed; frame.BorderBrush = Theme.Line; };
+        MouseEnter += (_, _) => { if (!selected) { hoverShade.Visibility = Visibility.Visible; frame.BorderBrush = Theme.Brush(item.Tint, 0.6); } };
+        MouseLeave += (_, _) => { hoverShade.Visibility = Visibility.Collapsed; frame.BorderBrush = idle; };
         MouseLeftButtonUp += (_, e) => { e.Handled = true; open(item); };
         MouseLeftButtonDown += (_, e) => e.Handled = true;
     }
@@ -382,78 +523,47 @@ sealed class ClipThumb : StackPanel
     }
 }
 
-/// The overlay's preview mode: video player or screenshot, with Back, Trim, Show in Explorer and Recycle Bin.
-sealed class ClipPreviewPane : StackPanel
+/// One clip in the pane: the video with play, frame steps, a timeline and trimming, or a screenshot.
+sealed class ClipView : StackPanel
 {
     public ClipItem Item { get; }
     public bool IsTrimming { get; private set; }
-    readonly Action back, closeOverlay;
+    public bool IsSaving { get; private set; }
+    readonly Action changed;
+    readonly bool autoplay;
     readonly Image? picture;
     readonly TimelineBar? timeline;
-    readonly TextBlock? clock, hint;
-    readonly Chip? trimChip;
+    readonly TextBlock? clock;
     readonly StackPanel? trimButtons;
+    readonly CircleButton? playButton;
     readonly DispatcherTimer ticker = new() { Interval = TimeSpan.FromMilliseconds(50) };
-    CircleButton? playButton;
+    readonly double mediaW, mediaH, fps = 60, leadIn;
     ClipPlayer? player;
-    bool playing, saving, stopped;
-    double fps = 60, leadIn, mediaW, mediaH;
+    bool playing, stopped;
 
-    public ClipPreviewPane(ClipItem item, Size screen, Action back, Action closeOverlay)
+    /// The black rounded frame media sits in.
+    public static Grid Stage(double w, double h, UIElement content)
+    {
+        var stage = new Grid { Width = w, Height = h, Background = Brushes.Black };
+        stage.Clip = new RectangleGeometry(new Rect(0, 0, w, h), Theme.S(12), Theme.S(12));
+        stage.Children.Add(content);
+        return new Grid { Children = { stage, new Border { Width = w, Height = h, CornerRadius = new CornerRadius(Theme.S(12)), BorderThickness = new Thickness(1), BorderBrush = Theme.Line, IsHitTestVisible = false } } };
+    }
+
+    public ClipView(ClipItem item, double w, double h, bool autoplay, Action changed)
     {
         Item = item;
-        this.back = back;
-        this.closeOverlay = closeOverlay;
-        var (duration, size, probedFps, probedLeadIn) = ClipLibrary.Probe(item);
-        if (duration is { } d0) ClipLibrary.Durations[item.FilePath] = d0;
-        if (size is { } s0) ClipLibrary.Sizes[item.FilePath] = s0;
+        this.changed = changed;
+        this.autoplay = autoplay;
+        mediaW = w;
+        mediaH = h;
+        var (_, _, probedFps, probedLeadIn) = ClipLibrary.Probe(item);
         if (probedFps > 0) fps = probedFps;
         leadIn = probedLeadIn;
-        var (w, h) = MediaSize(screen);
 
-        // Header
-        var titleRow = new StackPanel { Orientation = Orientation.Horizontal };
-        var icon = Icons.Make(item.Icon, Theme.S(15), Theme.Brush(item.Tint));
-        icon.Margin = new Thickness(0, 0, Theme.S(7), 0);
-        titleRow.Children.Add(icon);
-        titleRow.Children.Add(Theme.Text(item.Title, 16, FontWeights.SemiBold));
-        var details = Theme.Text(Details(), 11.5, brush: Theme.Muted);
-        var titles = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(Theme.S(12), 0, Theme.S(16), 0) };
-        titles.Children.Add(titleRow);
-        titles.Children.Add(details);
-        var backButton = new CircleButton(Sym.Back, back) { ToolTip = "Back to the overlay" };
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        if (item.IsVideo)
+        if (!item.IsVideo)
         {
-            trimChip = new Chip("Trim", Sym.Scissors, BeginTrim) { Margin = new Thickness(0, 0, Theme.S(8), 0) };
-            actions.Children.Add(trimChip);
-        }
-        actions.Children.Add(new Chip("Show in Explorer", Sym.Folder, () => { var p = item.FilePath; closeOverlay(); Controller.Reveal(p); }) { Margin = new Thickness(0, 0, Theme.S(8), 0) });
-        actions.Children.Add(new Chip("Move to Recycle Bin", Sym.Trash, () => { Stop(); back(); ClipLibrary.Trash(item); }) { Margin = new Thickness(0, 0, Theme.S(12), 0) });
-        actions.Children.Add(new CircleButton(Sym.Close, closeOverlay) { ToolTip = "Close (Esc)" });
-        var header = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 0, 0, Theme.S(14)) };
-        DockPanel.SetDock(backButton, Dock.Left);
-        DockPanel.SetDock(actions, Dock.Right);
-        header.Children.Add(backButton);
-        header.Children.Add(actions);
-        header.Children.Add(titles);
-        Children.Add(header);
-
-        // Media
-        var stage = new Grid { Width = w, Height = h, Background = Brushes.Black };
-        stage.Clip = new RectangleGeometry(new Rect(0, 0, w, h), Theme.S(14), Theme.S(14));
-        if (item.IsVideo)
-        {
-            mediaW = w;
-            mediaH = h;
-            picture = new Image { Stretch = Stretch.Uniform };
-            stage.Children.Add(picture);
-            stage.MouseLeftButtonUp += (_, e) => { e.Handled = true; TogglePlay(); };
-            stage.MouseLeftButtonDown += (_, e) => e.Handled = true;
-            Loaded += (_, _) => StartPlayer();
-        }
-        else
-        {
+            var image = new Image { Stretch = Stretch.Uniform };
             try
             {
                 var bmp = new BitmapImage();
@@ -463,26 +573,32 @@ sealed class ClipPreviewPane : StackPanel
                 bmp.DecodePixelWidth = (int)Math.Min(w * 2, 3840);
                 bmp.EndInit();
                 bmp.Freeze();
-                stage.Children.Add(new Image { Source = bmp, Stretch = Stretch.Uniform });
+                image.Source = bmp;
             }
             catch { }
+            Children.Add(Stage(w, h, image));
+            return;
         }
-        Children.Add(new Grid { Children = { stage, new Border { Width = w, Height = h, CornerRadius = new CornerRadius(Theme.S(14)), BorderThickness = new Thickness(1), BorderBrush = Theme.Line, IsHitTestVisible = false } } });
 
-        if (!item.IsVideo) return;
+        // Until the first frame arrives, Explorer's thumbnail stands in for it.
+        picture = new Image { Stretch = Stretch.Uniform, Source = ClipLibrary.Thumbs.TryGetValue(item.FilePath, out var thumb) ? thumb : null };
+        var stage = Stage(w, h, picture);
+        stage.Cursor = Cursors.Hand;
+        stage.MouseLeftButtonUp += (_, e) => { e.Handled = true; TogglePlay(); };
+        stage.MouseLeftButtonDown += (_, e) => e.Handled = true;
+        Children.Add(stage);
 
-        // Transport: play/pause, frame steps, timeline, time, and the trim controls.
-        timeline = new TimelineBar { Height = Theme.S(28), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(Theme.S(10), 0, Theme.S(10), 0) };
+        timeline = new TimelineBar { Height = Theme.S(24), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(Theme.S(10), 0, Theme.S(10), 0) };
         timeline.Seek += t => { Pause(); if (player != null) player.Position = t; UpdateClock(); };
         playButton = new CircleButton(Sym.Play, TogglePlay) { ToolTip = "Play or pause (Space)" };
         var stepBack = new CircleButton(Sym.StepBack, () => Step(-1)) { ToolTip = "Back a frame (←)", Margin = new Thickness(Theme.S(6), 0, 0, 0) };
         var stepFwd = new CircleButton(Sym.StepForward, () => Step(1)) { ToolTip = "Forward a frame (→)", Margin = new Thickness(Theme.S(6), 0, 0, 0) };
-        clock = Theme.Text("0:00", 11, FontWeights.SemiBold, Theme.Muted, Theme.Mono);
+        clock = Theme.Text("0:00", 10.5, FontWeights.SemiBold, Theme.Muted, Theme.Mono);
         clock.VerticalAlignment = VerticalAlignment.Center;
         trimButtons = new StackPanel { Orientation = Orientation.Horizontal, Visibility = Visibility.Collapsed, Margin = new Thickness(Theme.S(10), 0, 0, 0) };
         trimButtons.Children.Add(new Chip("Trim", Sym.Scissors, ConfirmTrim) { Margin = new Thickness(0, 0, Theme.S(6), 0) });
         trimButtons.Children.Add(new Chip("Cancel", Sym.Close, CancelTrim));
-        var transport = new DockPanel { Margin = new Thickness(0, Theme.S(12), 0, 0), Width = w };
+        var transport = new DockPanel { Margin = new Thickness(0, Theme.S(8), 0, 0), Width = w };
         var left = new StackPanel { Orientation = Orientation.Horizontal };
         left.Children.Add(playButton); left.Children.Add(stepBack); left.Children.Add(stepFwd);
         var right = new StackPanel { Orientation = Orientation.Horizontal };
@@ -493,33 +609,10 @@ sealed class ClipPreviewPane : StackPanel
         transport.Children.Add(right);
         transport.Children.Add(timeline);
         Children.Add(transport);
-        hint = Theme.Text("Space to play or pause · ← → to step a frame", 11, brush: Theme.Muted);
-        hint.Margin = new Thickness(0, Theme.S(10), 0, 0);
-        hint.Width = w;
-        Children.Add(hint);
 
         ticker.Tick += (_, _) => UpdateClock();
-        ticker.Start();
+        Loaded += (_, _) => StartPlayer();
         Unloaded += (_, _) => Stop();
-    }
-
-    (double w, double h) MediaSize(Size screen)
-    {
-        double maxW = Math.Min(Theme.S(640), screen.Width * 0.7), maxH = screen.Height * 0.6;
-        var natural = ClipLibrary.Sizes.TryGetValue(Item.FilePath, out var s) ? s : (W: 16, H: 9);
-        double aspect = natural.W > 0 && natural.H > 0 ? natural.W / (double)natural.H : 16 / 9.0;
-        double w = maxW, h = maxW / aspect;
-        if (h > maxH) { h = maxH; w = maxH * aspect; }
-        return (Math.Max(w, Theme.S(320)), h);
-    }
-
-    string Details()
-    {
-        var parts = new List<string> { Item.Date.ToString("MMM d, yyyy 'at' h:mm tt") };
-        if (ClipLibrary.Durations.TryGetValue(Item.FilePath, out var d)) parts.Add(Format.Duration(d));
-        if (ClipLibrary.Sizes.TryGetValue(Item.FilePath, out var s)) parts.Add($"{s.W}×{s.H}");
-        try { parts.Add(Controller.SizeText(new FileInfo(Item.FilePath).Length)); } catch { }
-        return string.Join(" · ", parts);
     }
 
     void StartPlayer()
@@ -531,18 +624,20 @@ sealed class ClipPreviewPane : StackPanel
         catch (Exception e)
         {
             Log.Error("clip player", e);
-            ShowProblem("Couldn't play this clip.");
+            ShowProblem("Couldn't play this clip. Show it in Explorer to open it in another player.");
             return;
         }
         player.Opened += () =>
         {
             picture!.Source = player.Frame;
             timeline!.Duration = player.Duration;
-            Play();
+            if (autoplay) Play();
+            else player.Position = 0; // shows the first frame, paused
         };
         player.Ended += () => { playing = false; UpdatePlayButton(); };
         player.Failed += ShowProblem;
         CompositionTarget.Rendering += OnRendering;
+        ticker.Start();
     }
 
     void OnRendering(object? sender, EventArgs e) => player?.Update();
@@ -615,15 +710,13 @@ sealed class ClipPreviewPane : StackPanel
 
     public void BeginTrim()
     {
-        if (player == null || timeline == null || saving || IsTrimming || timeline.Duration <= 0) return;
+        if (player == null || timeline == null || IsSaving || IsTrimming || timeline.Duration <= 0) return;
         Pause();
         IsTrimming = true;
         timeline.BeginTrim();
         trimButtons!.Visibility = Visibility.Visible;
-        trimChip!.IsEnabled = false;
-        trimChip.Opacity = 0.5;
-        hint!.Text = "Drag the yellow handles, then click Trim (Enter). The original clip is kept.";
         UpdateClock();
+        changed();
     }
 
     public void CancelTrim()
@@ -632,10 +725,8 @@ sealed class ClipPreviewPane : StackPanel
         IsTrimming = false;
         timeline!.EndTrim();
         trimButtons!.Visibility = Visibility.Collapsed;
-        trimChip!.IsEnabled = true;
-        trimChip.Opacity = 1;
-        hint!.Text = "Space to play or pause · ← → to step a frame";
         UpdateClock();
+        changed();
     }
 
     public async void ConfirmTrim()
@@ -643,9 +734,8 @@ sealed class ClipPreviewPane : StackPanel
         if (!IsTrimming || timeline == null) return;
         double start = timeline.TrimStart, end = timeline.TrimEnd;
         CancelTrim();
-        saving = true;
-        trimChip!.IsEnabled = false;
-        trimChip.Opacity = 0.5;
+        IsSaving = true;
+        changed();
         var dest = ClipTrimmer.OutputPath(Item.FilePath);
         try
         {
@@ -662,9 +752,8 @@ sealed class ClipPreviewPane : StackPanel
         }
         finally
         {
-            saving = false;
-            trimChip.IsEnabled = true;
-            trimChip.Opacity = 1;
+            IsSaving = false;
+            changed();
         }
     }
 }

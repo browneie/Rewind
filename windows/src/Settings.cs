@@ -15,7 +15,10 @@ sealed class RewindException(string message, int hresult = 0) : Exception(messag
 
 enum VideoCodec { H264, Hevc }
 
-enum Quality { Medium, High, VeryHigh, Ultra }
+enum Quality { Medium, High, VeryHigh, Ultra, Custom }
+
+/// Overlay layouts, chosen in Settings → Overlay. "Panes" is the saved name for Split, as on macOS.
+enum OverlayLayout { Classic, Tiles, Panes }
 
 enum Resolution { Native = 0, P2160 = 2160, P1440 = 1440, P1080 = 1080, P720 = 720 }
 
@@ -31,7 +34,8 @@ static class Labels
         Quality.Medium => "Medium",
         Quality.High => "High",
         Quality.VeryHigh => "Very high",
-        _ => "Ultra",
+        Quality.Ultra => "Ultra",
+        _ => "Custom bitrate",
     };
 
     public static double BitsPerPixel(this Quality q) => q switch
@@ -43,6 +47,14 @@ static class Labels
     };
 
     public static string Label(this Resolution r) => r == Resolution.Native ? "Native" : $"{(int)r}p";
+
+    public static string Name(this OverlayLayout l) => l switch { OverlayLayout.Classic => "Classic", OverlayLayout.Tiles => "Tiles", _ => "Split" };
+    public static string Label(this OverlayLayout l) => l switch
+    {
+        OverlayLayout.Classic => "Classic (ShadowPlay-style)",
+        OverlayLayout.Tiles => "Tiles (big buttons, clips below)",
+        _ => "Split (actions beside a player)",
+    };
 }
 
 record struct CaptureSignature(
@@ -52,6 +64,7 @@ record struct CaptureSignature(
     bool AppRunning,
     int Fps,
     Quality Quality,
+    int CustomMbps,
     VideoCodec Codec,
     Resolution Resolution,
     bool ShowCursor,
@@ -78,8 +91,11 @@ static class CaptureMath
         return (Math.Max(2, (int)w & ~1), Math.Max(2, (int)h & ~1));
     }
 
-    public static int Bitrate((int W, int H) size, int fps, Quality quality, VideoCodec codec)
+    public const int MinMbps = 1, MaxMbps = 150;
+
+    public static int Bitrate((int W, int H) size, int fps, Quality quality, VideoCodec codec, int customMbps = 0)
     {
+        if (quality == Quality.Custom) return Math.Clamp(customMbps, MinMbps, MaxMbps) * 1_000_000;
         double bps = (double)size.W * size.H * fps * quality.BitsPerPixel();
         if (codec == VideoCodec.Hevc) bps *= 0.7;
         return (int)Math.Min(Math.Max(bps, 2_000_000), 150_000_000);
@@ -209,6 +225,12 @@ sealed class Settings : INotifyPropertyChanged
         public List<string> AppPrefixes { get; set; } = new();
         public string? OutputDirectory { get; set; }
         public Dictionary<string, Hotkey> Hotkeys { get; set; } = new();
+        public OverlayLayout OverlayLayout { get; set; } = OverlayLayout.Panes;
+        public uint AccentColor { get; set; } = Theme.DefaultAccent;
+        public double OverlayDim { get; set; } = 0.6;
+        public bool ShowHotkeys { get; set; } = true;
+        public double PlayerSize { get; set; } = Theme.DefaultPlayerSize;
+        public int CustomMbps { get; set; } = 20;
     }
 
     static readonly JsonSerializerOptions Json = new()
@@ -245,6 +267,10 @@ sealed class Settings : INotifyPropertyChanged
         x.DisplayId ??= "";
         x.CaptureAppId ??= "";
         x.CaptureAppName ??= "";
+        x.AccentColor &= 0xFFFFFF;
+        x.OverlayDim = double.IsFinite(x.OverlayDim) ? Math.Clamp(x.OverlayDim, 0, 0.9) : 0.6;
+        x.PlayerSize = double.IsFinite(x.PlayerSize) ? Math.Clamp(x.PlayerSize, Theme.MinPlayerSize, Theme.MaxPlayerSize) : Theme.DefaultPlayerSize;
+        x.CustomMbps = Math.Clamp(x.CustomMbps, CaptureMath.MinMbps, CaptureMath.MaxMbps);
         return x;
     }
 
@@ -287,6 +313,15 @@ sealed class Settings : INotifyPropertyChanged
     public bool ShareRewindWindows { get => d.ShareRewindWindows; set => Set(d.ShareRewindWindows, value, v => d.ShareRewindWindows = v); }
     public bool AutoCleanup { get => d.AutoCleanup; set => Set(d.AutoCleanup, value, v => d.AutoCleanup = v); }
     public int CleanupDays { get => d.CleanupDays; set => Set(d.CleanupDays, Math.Max(1, value), v => d.CleanupDays = v); }
+    public OverlayLayout OverlayLayout { get => d.OverlayLayout; set => Set(d.OverlayLayout, value, v => d.OverlayLayout = v); }
+    /// 0xRRGGBB; used for Instant Replay, highlights and notifications.
+    public uint AccentColor { get => d.AccentColor; set => Set(d.AccentColor, value & 0xFFFFFF, v => d.AccentColor = v); }
+    public double OverlayDim { get => d.OverlayDim; set => Set(d.OverlayDim, Math.Clamp(value, 0, 0.9), v => d.OverlayDim = v); }
+    public bool ShowHotkeys { get => d.ShowHotkeys; set => Set(d.ShowHotkeys, value, v => d.ShowHotkeys = v); }
+    /// Width of the Split / Gallery player, before the overlay's scale.
+    public double PlayerSize { get => d.PlayerSize; set => Set(d.PlayerSize, Math.Clamp(value, Theme.MinPlayerSize, Theme.MaxPlayerSize), v => d.PlayerSize = v); }
+    /// Bitrate in Mbps when Quality is "Custom bitrate".
+    public int CustomMbps { get => d.CustomMbps; set => Set(d.CustomMbps, Math.Clamp(value, CaptureMath.MinMbps, CaptureMath.MaxMbps), v => d.CustomMbps = v); }
     /// App names used to name clips ("Roblox"), so cleanup and Recent clips still recognise those files.
     public IReadOnlyList<string> AppPrefixes => d.AppPrefixes;
 
@@ -344,7 +379,7 @@ sealed class Settings : INotifyPropertyChanged
     public CaptureSignature CaptureSignature => new(
         DisplayId, CaptureAppId, CaptureAppName,
         AppRunning: CaptureAppId.Length > 0 && AppTarget.IsRunning(CaptureAppId),
-        Fps, Quality, Codec, Resolution, ShowCursor, SystemAudio, Microphone);
+        Fps, Quality, CustomMbps, Codec, Resolution, ShowCursor, SystemAudio, Microphone);
 }
 
 

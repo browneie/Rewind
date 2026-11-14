@@ -21,24 +21,27 @@ static class DevTools
                 BitmapSource? game = background == null ? null : new BitmapImage(new Uri(Path.GetFullPath(background)));
                 int w = game?.PixelWidth ?? 1600, h = game?.PixelHeight ?? 1000;
                 if (clips != null) ClipLibrary.LoadNow(Path.GetFullPath(clips));
-                var overlay = new OverlayWindow(() => { });
-                overlay.ShowPreviewState(w, h);
-                var content = (FrameworkElement)overlay.Content;
-                overlay.Content = null;
-                Save(game == null ? OnBackground(content, w, h) : OnImage(content, game), Path.Combine(dir, "overlay.png"));
-
-                if (ClipLibrary.Items.FirstOrDefault() is { } clip)
+                foreach (var (layout, file) in new[] { (OverlayLayout.Panes, "overlay.png"), (OverlayLayout.Tiles, "overlay-tiles.png"), (OverlayLayout.Classic, "overlay-classic.png") })
                 {
-                    var previewing = new OverlayWindow(() => { });
-                    previewing.ShowPreviewState(w, h);
-                    previewing.OpenPreview(clip.FilePath, new Size(w, h));
-                    var page = (FrameworkElement)previewing.Content;
-                    previewing.Content = null;
-                    Save(game == null ? OnBackground(page, w, h) : OnImage(page, game), Path.Combine(dir, "overlay-preview.png"));
+                    Settings.Shared.OverlayLayout = layout;
+                    var overlay = new OverlayWindow(() => { }, new Size(w, h));
+                    overlay.ShowPreviewState(w, h);
+                    var content = (FrameworkElement)overlay.Content;
+                    overlay.Content = null;
+                    Save(game == null ? OnBackground(content, w, h) : OnImage(content, game), Path.Combine(dir, file));
                 }
+                Settings.Shared.OverlayLayout = OverlayLayout.Panes;
 
                 var toast = Toast.BuildCard("Replay saved", "2:00 · Replay 2026-11-13 at 21.04.11.mp4", Sym.Check, Theme.Replay, clickable: true);
                 Save(OnBackground(toast, 560, 140), Path.Combine(dir, "notification.png"));
+
+                var wheel = new Border
+                {
+                    Background = new SolidColorBrush(Color.FromRgb(32, 32, 32)), CornerRadius = new CornerRadius(8),
+                    Child = new ColorWheelPicker(Theme.DefaultAccent, _ => { }),
+                };
+                System.Windows.Documents.TextElement.SetForeground(wheel, Brushes.White);
+                Save(wheel, Path.Combine(dir, "color-wheel.png"));
 
                 var settings = SettingsWindow.CreateForPreview();
                 Save(settings, Path.Combine(dir, "settings.png"));

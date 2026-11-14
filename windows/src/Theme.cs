@@ -6,8 +6,8 @@ using Path = System.Windows.Shapes.Path;
 
 namespace Rewind;
 
-/// Look of the overlay and notifications, from the design made in design/overlay-mockup.html
-/// (the same values as Sources/Rewind/Theme.swift). Change values here and rebuild to see them.
+/// Look of the overlay and notifications (the same values as Sources/Rewind/Theme.swift). The layout, accent
+/// color, dimming and hotkey hints are in Settings → Overlay; change the rest here and rebuild to see them.
 static class Theme
 {
     // Size multiplier for everything (mockup "Size").
@@ -17,15 +17,27 @@ static class Theme
     // How opaque the dark panel is over the dimmed game, 0–1 (mockup "Panel opacity"). macOS uses 0.64 with a
     // blurred backdrop; Windows can't blur behind one panel of a transparent window, so it's a bit more opaque.
     public const double PanelOpacity = 0.85;
-    // How much the game behind the overlay is darkened, 0–1 (mockup "Dim the game").
-    public const double Dim = 0.6;
+    // How much the game behind the overlay is darkened, 0–0.9. Set in Settings → Overlay.
+    public static double Dim => Settings.Shared.OverlayDim;
 
-    public static readonly Color Accent = Hex(0x3DDC84);
-    public static readonly Color Replay = Hex(0x3DDC84);
+    // Accent (and Instant Replay) color. Set in Settings → Overlay; presets below, or any color from the wheel.
+    public static Color Accent => Hex(Settings.Shared.AccentColor);
+    public static Color Replay => Accent;
     public static readonly Color Record = Hex(0xFF4D5E);
     public static readonly Color Screenshot = Hex(0x4DA3FF);
+    public const uint DefaultAccent = 0x3DDC84;
+    public static readonly (string Name, uint Hex)[] AccentPresets =
+    {
+        ("Rewind green", 0x3DDC84), ("Classic green", 0x76B900), ("Sky", 0x4DA3FF), ("Violet", 0xA78BFA),
+        ("Amber", 0xFFB454), ("Rose", 0xFF6B9D), ("White", 0xF2F2F2),
+    };
 
-    public const bool ShowHotkeys = true;
+    public static bool ShowHotkeys => Settings.Shared.ShowHotkeys;
+
+    // Split layout: width of the actions pane (before scaling).
+    public const double ActionsWidth = 215;
+    // Player width (before scaling) is set in Settings → Overlay → Player size; this is its range.
+    public const double MinPlayerSize = 400, MaxPlayerSize = 1000, DefaultPlayerSize = 600;
 
     public const string Brand = "Rewind";
     public const string ReplayTitle = "Instant Replay";
@@ -44,6 +56,8 @@ static class Theme
     public static readonly Brush Line = Frozen(new SolidColorBrush(Color.FromArgb(23, 255, 255, 255)));
     public static readonly Brush Muted = Frozen(new SolidColorBrush(Color.FromArgb(148, 255, 255, 255)));
     public static double S(double v) => v * Scale;
+    // Windows' "Animation effects" setting (off when the user wants less motion).
+    public static bool ReduceMotion => !SystemParameters.ClientAreaAnimation;
 
     public static readonly FontFamily Font = new("Segoe UI Variable Display, Segoe UI");
     public static readonly FontFamily Mono = new("Cascadia Mono, Consolas");
@@ -69,7 +83,9 @@ static class Theme
 }
 
 enum Sym { Replay, ReplayOff, Record, RecordFill, Stop, Camera, Folder, Gear, Close, Check, Error, Warning, Hourglass, Lock, Keyboard, Display, App, Mic,
-           Trash, Play, Pause, Back, Scissors, Eye, Gamepad, StepBack, StepForward }
+           Trash, Play, Pause, Back, Scissors, Eye, Gamepad, StepBack, StepForward, Film, MicOff,
+           // The rewind arrow with the replay length inside it ("30", "2m").
+           ReplayLength }
 
 static class Icons
 {
@@ -97,6 +113,8 @@ static class Icons
         Sym.Gamepad => "",
         Sym.StepBack => "",
         Sym.StepForward => "",
+        Sym.Film => "",
+        Sym.MicOff => "",
         _ => null,
     };
 
@@ -111,6 +129,7 @@ static class Icons
         return sym switch
         {
             Sym.Replay or Sym.ReplayOff => RewindArrow(size, brush, dot: false),
+            Sym.ReplayLength => ReplayIcon(Settings.Shared.ReplaySeconds, size, brush),
             Sym.Record => RecordCircle(size, brush, filled: false),
             Sym.RecordFill => RecordCircle(size, brush, filled: true),
             Sym.Stop => new Border
@@ -120,6 +139,24 @@ static class Icons
             },
             _ => new Border(),
         };
+    }
+
+    /// A rewind arrow with the replay length inside it, like SF Symbols' gobackward.30 but for any length.
+    public static FrameworkElement ReplayIcon(int seconds, double size, Brush brush)
+    {
+        string label = seconds < 60 ? $"{seconds}" : seconds % 60 == 0 ? $"{seconds / 60}m" : Format.Duration(seconds);
+        var text = new TextBlock
+        {
+            Text = label, Foreground = brush, FontFamily = Theme.Font, FontWeight = FontWeights.Black,
+            FontSize = size * (label.Length > 2 ? 0.27 : 0.33),
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            // The ring's centre sits a little below the middle of the icon.
+            Margin = new Thickness(0, size * 0.1, 0, 0),
+        };
+        var grid = new Grid { Width = size, Height = size };
+        grid.Children.Add(RewindArrow(size, brush, dot: false));
+        grid.Children.Add(text);
+        return grid;
     }
 
     public static FrameworkElement RewindArrow(double size, Brush brush, bool dot)

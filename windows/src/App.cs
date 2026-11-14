@@ -95,7 +95,7 @@ sealed class Tray : IDisposable
         else
         {
             var hint = s.HotkeyHint(HotkeyAction.ToggleOverlay, "opens the overlay");
-            Toast.Show("Rewind is running", hint.Length == 0 ? "Open the overlay from the tray icon." : hint, Sym.Record, Theme.Green);
+            Toast.Show("Rewind is running", hint.Length == 0 ? "Open the overlay from the tray icon." : hint, Sym.Record, Theme.Accent);
         }
     }
 

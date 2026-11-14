@@ -173,6 +173,15 @@ static class Native
 
     public static POINT CursorPos() { GetCursorPos(out var p); return p; }
 
+    [DllImport("shcore.dll")] static extern int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
+
+    /// Physical pixels per WPF unit on the monitor under the mouse (1.5 at 150% scaling).
+    public static double DpiScaleUnderCursor()
+    {
+        var hmon = MonitorFromPoint(CursorPos(), MONITOR_DEFAULTTONEAREST);
+        return GetDpiForMonitor(hmon, 0 /* effective */, out uint x, out _) == 0 && x > 0 ? x / 96.0 : 1;
+    }
+
     public static (RECT bounds, RECT work) MonitorUnderCursor()
     {
         var hmon = MonitorFromPoint(CursorPos(), MONITOR_DEFAULTTONEAREST);

@@ -108,7 +108,7 @@ sealed class Controller
             var what = engine.CapturedApp is { } app ? $"{app} · " : "";
             Toast.Show("Instant Replay is on",
                 Joined($"{what}Keeping the last {Format.Duration(settings.ReplaySeconds)}", settings.HotkeyHint(HotkeyAction.SaveReplay, "to save")),
-                Sym.Replay, Theme.Green);
+                Sym.Replay, Theme.Accent);
         });
     }
 
@@ -143,7 +143,7 @@ sealed class Controller
         {
             double length = await ClipWriter.WriteAsync(snap, path);
             ClipLibrary.RefreshIfShown();
-            Toast.Show("Replay saved", $"{Format.Duration(length)} · {Path.GetFileName(path)}", Sym.Check, Theme.Green,
+            Toast.Show("Replay saved", $"{Format.Duration(length)} · {Path.GetFileName(path)}", Sym.Check, Theme.Accent,
                 onClick: () => OverlayController.Show(path));
         }
         catch (Exception e)
@@ -170,7 +170,7 @@ sealed class Controller
             if (!ok || !Recording) return;
             engine.ForceKeyframe();
             var hint = settings.HotkeyHint(HotkeyAction.ToggleRecording, "to stop");
-            Toast.Show("Recording started", hint.Length == 0 ? null : hint, Sym.RecordFill, Theme.Red);
+            Toast.Show("Recording started", hint.Length == 0 ? null : hint, Sym.RecordFill, Theme.Record);
         });
     }
 
@@ -191,7 +191,7 @@ sealed class Controller
             {
                 double length = await rec.FinishAsync();
                 ClipLibrary.RefreshIfShown();
-                Toast.Show("Recording saved", $"{Format.Duration(length)} · {Path.GetFileName(rec.Path)}", Sym.Check, Theme.Green,
+                Toast.Show("Recording saved", $"{Format.Duration(length)} · {Path.GetFileName(rec.Path)}", Sym.Check, Theme.Accent,
                     onClick: () => OverlayController.Show(rec.Path));
             }
             catch (Exception e)
@@ -216,7 +216,7 @@ sealed class Controller
             }
             await engine.ScreenshotAsync(settings.DisplayId, settings.CaptureAppId, settings.ShowCursor, path);
             ClipLibrary.RefreshIfShown();
-            Toast.Show("Screenshot saved", Path.GetFileName(path), Sym.Camera, Theme.Blue, onClick: () => OverlayController.Show(path));
+            Toast.Show("Screenshot saved", Path.GetFileName(path), Sym.Camera, Theme.Screenshot, onClick: () => OverlayController.Show(path));
         }
         catch (Exception e)
         {
@@ -337,7 +337,7 @@ sealed class Controller
             MarkStopped();
             Router.Replay.Clear();
             if (previous?.AppRunning == sig.AppRunning || sig.AppId.Length == 0)
-                Toast.Show("Capture settings updated", "The replay buffer was restarted.", Sym.Gear, Theme.Blue);
+                Toast.Show("Capture settings updated", "The replay buffer was restarted.", Sym.Gear, Theme.Accent);
         }
         try
         {

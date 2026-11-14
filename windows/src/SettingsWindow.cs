@@ -102,15 +102,23 @@ sealed class SettingsWindow : Window
         displayLabel = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
         var displays = new List<(string, string)> { ("Main display", "") };
         displays.AddRange(Displays.All().Select(d => (d.Name, d.Id)));
+        var bitrateRow = Row("Bitrate", BitrateBox());
+        var videoFooter = Footer("120 fps makes Windows capture and convert twice as many frames as 60 fps, which uses more of the GPU your game is using. 60 fps is easier on frame rates.");
+        refreshers.Add(() =>
+        {
+            bitrateRow.Visibility = s.Quality == Quality.Custom ? Visibility.Visible : Visibility.Collapsed;
+            videoFooter.Visibility = s.Fps >= 120 ? Visibility.Visible : Visibility.Collapsed;
+        });
         Section("Video", new[]
         {
             Row(displayLabel, Combo(displays, s.DisplayId, v => s.DisplayId = v)),
             Row("Resolution", Combo(Enum.GetValues<Resolution>().Select(r => (r.Label(), r)), s.Resolution, v => s.Resolution = v)),
             Row("Frame rate", FrameRateBox()),
             Row("Quality", Combo(Enum.GetValues<Quality>().Select(q => (q.Label(), q)), s.Quality, v => s.Quality = v)),
+            bitrateRow,
             Row("Codec", Combo(Enum.GetValues<VideoCodec>().Select(v => (v.Label(), v)), s.Codec, v => s.Codec = v)),
             Toggle("Show mouse cursor", s.ShowCursor, v => s.ShowCursor = v),
-        });
+        }, videoFooter);
 
         mixMic = new CheckBox { Content = "Mix microphone into the main track", IsChecked = s.MixMicrophone };
         mixMic.Click += (_, _) => s.MixMicrophone = mixMic.IsChecked == true;
@@ -161,6 +169,8 @@ sealed class SettingsWindow : Window
             Row("Keep clips for", keepFor),
         }, saveFooter);
 
+        BuildOverlaySection();
+
         var hotkeyRows = HotkeyActions.All.Select(a => Row(a.Label(), new HotkeyField(this, a))).ToList();
         var reset = new Button { Content = "Reset to defaults", HorizontalAlignment = HorizontalAlignment.Left };
         reset.Click += (_, _) => s.ResetHotkeys();
@@ -205,7 +215,8 @@ sealed class SettingsWindow : Window
         audioFooter.Visibility = audioFooter.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
 
         var size = CaptureMath.OutputSize(CaptureMath.NativePixelSize(s.DisplayId), s.Resolution, s.Codec);
-        int bitrate = (int)(CaptureMath.Bitrate(size, s.Fps, s.Quality, s.Codec) * EncoderTuning.For(s.Codec).BitrateFactor);
+        int bitrate = CaptureMath.Bitrate(size, s.Fps, s.Quality, s.Codec, s.CustomMbps);
+        if (s.Quality != Quality.Custom) bitrate = (int)(bitrate * EncoderTuning.For(s.Codec).BitrateFactor);
         int tracks = (s.SystemAudio ? 1 : 0) + (s.Microphone ? 1 : 0);
         if (tracks > 1 && s.MixMicrophone) tracks = 1;
         double bytes = bitrate / 8.0 * s.ReplaySeconds + tracks * Audio.Bitrate / 8.0 * s.ReplaySeconds;
@@ -243,6 +254,85 @@ sealed class SettingsWindow : Window
         return row;
     }
 
+
+    FrameworkElement BitrateBox()
+    {
+        var box = new TextBox { Width = 56, TextAlignment = TextAlignment.Right, Text = s.CustomMbps.ToString() };
+        void Commit()
+        {
+            if (int.TryParse(new string(box.Text.Where(char.IsDigit).ToArray()), out int v)) s.CustomMbps = v;
+            box.Text = s.CustomMbps.ToString();
+        }
+        box.LostKeyboardFocus += (_, _) => Commit();
+        box.PreviewKeyDown += (_, e) => { if (e.Key == Key.Enter) { Commit(); e.Handled = true; } };
+        refreshers.Add(() => { if (!box.IsKeyboardFocusWithin) box.Text = s.CustomMbps.ToString(); });
+        Button Step(string glyph, int by, string tip)
+        {
+            var b = new Button { Content = new TextBlock { Text = glyph, FontFamily = Theme.Symbols, FontSize = 10 }, Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(4, 0, 0, 0), ToolTip = tip };
+            b.Click += (_, _) => s.CustomMbps += by;
+            return b;
+        }
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(box);
+        row.Children.Add(Step("\ue738", -1, "1 Mbps less"));
+        row.Children.Add(Step("\ue710", 1, "1 Mbps more"));
+        row.Children.Add(new TextBlock { Text = "Mbps", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), ToolTip = $"{CaptureMath.MinMbps} to {CaptureMath.MaxMbps} Mbps" });
+        return row;
+    }
+
+    void BuildOverlaySection()
+    {
+        var accent = new AccentColorButton(() => s.AccentColor, v => s.AccentColor = v);
+        var presets = new StackPanel { Orientation = Orientation.Horizontal };
+        void ShowPresets()
+        {
+            presets.Children.Clear();
+            foreach (var (name, hex) in Theme.AccentPresets)
+            {
+                bool chosen = s.AccentColor == hex;
+                var dot = new System.Windows.Shapes.Ellipse
+                {
+                    Width = 18, Height = 18, Margin = new Thickness(7, 0, 0, 0), Cursor = Cursors.Hand, ToolTip = name,
+                    Fill = new SolidColorBrush(Theme.Hex(hex)), StrokeThickness = chosen ? 2 : 1,
+                    Stroke = new SolidColorBrush(chosen ? Color.FromArgb(230, 128, 128, 128) : Color.FromArgb(50, 128, 128, 128)),
+                };
+                dot.MouseLeftButtonUp += (_, _) => s.AccentColor = hex;
+                presets.Children.Add(dot);
+            }
+        }
+        refreshers.Add(() => { accent.Show(s.AccentColor); ShowPresets(); });
+
+        var dim = new Slider { Minimum = 0, Maximum = 0.9, Width = 180, Value = s.OverlayDim, SmallChange = 0.05, LargeChange = 0.1 };
+        dim.ValueChanged += (_, _) => { if (!building) s.OverlayDim = dim.Value; };
+        var size = new Slider { Minimum = Theme.MinPlayerSize, Maximum = Theme.MaxPlayerSize, Width = 160, Value = s.PlayerSize, TickFrequency = 10, IsSnapToTickEnabled = true, SmallChange = 10, LargeChange = 50 };
+        size.ValueChanged += (_, _) => { if (!building) s.PlayerSize = size.Value; };
+        var sizeRow = new StackPanel { Orientation = Orientation.Horizontal, ToolTip = "Width of the player in the Split layout and Classic's Gallery" };
+        sizeRow.Children.Add(new TextBlock { Text = "\ue7f4", FontFamily = Theme.Symbols, FontSize = 11, Opacity = 0.6, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
+        sizeRow.Children.Add(size);
+        sizeRow.Children.Add(new TextBlock { Text = "\ue7f4", FontFamily = Theme.Symbols, FontSize = 18, Opacity = 0.6, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) });
+        var sizeLabel = new TextBlock { Text = "Player size", VerticalAlignment = VerticalAlignment.Center };
+        refreshers.Add(() =>
+        {
+            if (!dim.IsMouseCaptureWithin) dim.Value = s.OverlayDim;
+            if (!size.IsMouseCaptureWithin) size.Value = s.PlayerSize;
+            sizeRow.IsEnabled = s.OverlayLayout != OverlayLayout.Tiles;
+            sizeLabel.Opacity = sizeRow.IsEnabled ? 1 : 0.5;
+        });
+        var preview = new Button { Content = "Preview overlay", HorizontalAlignment = HorizontalAlignment.Left };
+        preview.Click += (_, _) => OverlayController.Show();
+
+        Section("Overlay", new[]
+        {
+            Row("Layout", Combo(Enum.GetValues<OverlayLayout>().Select(l => (l.Label(), l)), s.OverlayLayout, v => s.OverlayLayout = v)),
+            Row("Accent color", accent),
+            Row("Presets", presets),
+            Row("Dim the game", dim),
+            Row(sizeLabel, sizeRow),
+            Toggle("Show hotkeys in the overlay", s.ShowHotkeys, v => s.ShowHotkeys = v),
+            Pad(preview),
+        }, Footer("The accent color is used for Instant Replay, highlights and notifications. Click the swatch for the color wheel, or type a hex code. " +
+                  "Changes apply the next time the overlay opens."));
+    }
 
     sealed record AppChoice(string Key, string Name);
 

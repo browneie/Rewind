@@ -27,7 +27,7 @@ static class Bench
         bool mine = args.Contains("--use-settings");
         var sig = mine
             ? settings.CaptureSignature with { SystemAudio = false, Microphone = false }
-            : new CaptureSignature("", "", "", false, 60, Quality.High, VideoCodec.H264, Resolution.Native, false, false, false);
+            : new CaptureSignature("", "", "", false, 60, Quality.High, 0, VideoCodec.H264, Resolution.Native, false, false, false);
         int fi = Array.IndexOf(args, "--fps");
         if (fi >= 0 && args.Length > fi + 1 && int.TryParse(args[fi + 1], out var fps)) sig = sig with { Fps = fps };
         int replaySeconds = mine ? settings.ReplaySeconds : 120;
