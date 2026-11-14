@@ -75,6 +75,26 @@ If clips come out black or silent after an update, remove Rewind from the Screen
 
 Clips are saved to `~/Movies/Rewind` by default.
 
+### Uninstall
+
+Settings → **Uninstall Rewind…** (at the very bottom) permanently deletes everything Rewind put on your Mac except your clips. It shows you the list first, and once you confirm it does this by itself:
+
+| Trace | What happens to it |
+|---|---|
+| Rewind.app (the copy you're running) | Deleted |
+| Other copies of Rewind (e.g. an older one in Downloads) | Deleted |
+| Downloaded installers in Downloads or on the Desktop (`Rewind-<version>-macOS.dmg` / `.zip`) | Deleted |
+| Settings (`~/Library/Preferences/local.rewind.recorder.plist`) | Deleted |
+| Caches from update checks (`~/Library/Caches/local.rewind.recorder`, `~/Library/HTTPStorages/local.rewind.recorder`) | Deleted |
+| Leftover update downloads in the temporary folder | Deleted |
+| Screen & System Audio Recording and Microphone permissions | Reset (Rewind disappears from those lists) |
+| "Open Rewind at login" | Removed from Login Items |
+| **Your clips** (`~/Movies/Rewind` or the folder you chose) | **Kept** |
+
+A recording in progress is saved first. Deleting is permanent (nothing goes to the Trash), so to use Rewind again you'd download it again; your clips are untouched either way.
+
+macOS lets an app delete itself, but it can stop it from deleting *other* apps (its App Management protection). If an older copy of Rewind can't be deleted, Rewind selects it in Finder and tells you, so you can drag it to the Trash yourself.
+
 ## Settings
 
 <img src="docs/settings.png" width="420" alt="Settings window">

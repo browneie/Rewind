@@ -240,6 +240,15 @@ struct SettingsView: View {
             }
 
             UpdatesSection()
+
+            Section {
+                Button("Uninstall Rewind…", role: .destructive) { Uninstaller.confirmAndRun() }
+            } header: {
+                Text("Uninstall")
+            } footer: {
+                Text("Permanently deletes Rewind, its settings and caches, other copies of Rewind and downloaded Rewind installers, and removes its permissions and login item. Your clips are kept.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .defaultScrollAnchor(.top)
