@@ -69,7 +69,7 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
         let scale = CGFloat(filter.pointPixelScale)
         let native = CGSize(width: filter.contentRect.width * scale, height: filter.contentRect.height * scale)
         let size = CaptureMath.outputSize(native: native, resolution: sig.resolution, codec: sig.codec)
-        let bitrate = CaptureMath.bitrate(size: size, fps: sig.fps, quality: sig.quality, codec: sig.codec)
+        let bitrate = CaptureMath.bitrate(size: size, fps: sig.fps, quality: sig.quality, codec: sig.codec, customMbps: sig.customMbps)
 
         let cfg = SCStreamConfiguration()
         cfg.width = Int(size.width)
@@ -171,8 +171,9 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
     }
 }
 
-/// A permanent, invisible 1×1 window. ScreenCaptureKit only lists apps that own a window, and Rewind
-/// has to be listed to be left out of the capture; without this it isn't until the overlay first opens.
+/// A permanent 1×1 window that is never put on screen. ScreenCaptureKit only lists apps that own a window,
+/// and Rewind has to be listed to be left out of the capture. Keeping it off screen matters: any window on a
+/// fullscreen game's Space stops macOS sending the game's frames straight to the display, which costs FPS.
 @MainActor
 enum CaptureAnchor {
     private static var window: NSWindow?
@@ -187,9 +188,7 @@ enum CaptureAnchor {
         w.hasShadow = false
         w.ignoresMouseEvents = true
         w.isReleasedWhenClosed = false
-        w.level = .normal
-        w.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
-        w.orderFrontRegardless()
-        window = w
+        w.collectionBehavior = [.ignoresCycle]
+        window = w // created (defer: false) but never ordered in
     }
 }

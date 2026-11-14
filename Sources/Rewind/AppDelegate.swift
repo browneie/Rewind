@@ -51,7 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             let hint = settings.hotkeyHint(.toggleOverlay, "opens the overlay")
             Toast.show("Rewind is running", hint.isEmpty ? "Open the overlay from the menu bar." : hint,
-                       icon: "record.circle", tint: .green)
+                       icon: "record.circle", tint: Theme.accent)
         }
     }
 

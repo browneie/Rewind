@@ -48,7 +48,7 @@ struct SettingsView: View {
     private var estimate: String {
         let size = CaptureMath.outputSize(native: CaptureMath.nativePixelSize(displayID: s.displayID),
                                           resolution: s.resolution, codec: s.codec)
-        let bitrate = CaptureMath.bitrate(size: size, fps: s.fps, quality: s.quality, codec: s.codec)
+        let bitrate = CaptureMath.bitrate(size: size, fps: s.fps, quality: s.quality, codec: s.codec, customMbps: s.customMbps)
         let audioTracks = (s.systemAudio ? 1 : 0) + (s.microphone ? 1 : 0)
         let bytes = Double(bitrate) / 8 * Double(s.replaySeconds) + Double(audioTracks * 384_000 * s.replaySeconds)
         let mem = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
@@ -89,7 +89,7 @@ struct SettingsView: View {
                 runningApps = AppTarget.pickable()
             }
 
-            Section("Video") {
+            Section {
                 Picker(s.captureAppID.isEmpty ? "Display" : "Fallback display", selection: $s.displayID) {
                     ForEach(displays) { Text($0.name).tag($0.id) }
                 }
@@ -102,10 +102,28 @@ struct SettingsView: View {
                 Picker("Quality", selection: $s.quality) {
                     ForEach(Quality.allCases) { Text($0.label).tag($0) }
                 }
+                if s.quality == .custom {
+                    LabeledContent("Bitrate") {
+                        HStack(spacing: 6) {
+                            TextField("", value: $s.customMbps, format: .number)
+                                .multilineTextAlignment(.trailing).frame(width: 56)
+                                .onSubmit { s.customMbps = min(max(s.customMbps, Quality.customMbpsRange.lowerBound), Quality.customMbpsRange.upperBound) }
+                            Stepper("", value: $s.customMbps, in: Quality.customMbpsRange, step: 1).labelsHidden()
+                            Text("Mbps").foregroundStyle(.secondary)
+                        }
+                    }
+                }
                 Picker("Codec", selection: $s.codec) {
                     ForEach(VideoCodec.allCases) { Text($0.label).tag($0) }
                 }
                 Toggle("Show mouse cursor", isOn: $s.showCursor)
+            } header: {
+                Text("Video")
+            } footer: {
+                if s.fps >= 120 {
+                    Text("120 fps makes macOS copy and convert twice as many frames as 60 fps, which uses more of the GPU your game is using. 60 fps is easier on frame rates.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
 
             Section {
@@ -153,6 +171,44 @@ struct SettingsView: View {
                 Text(s.autoCleanup
                      ? "Replays, recordings and screenshots older than \(s.cleanupDays) \(s.cleanupDays == 1 ? "day" : "days") are moved to the Trash, so you can still get them back. Other files in the folder are never touched."
                      : "Clips are kept until you delete them.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                Picker("Layout", selection: $s.overlayLayout) {
+                    ForEach(OverlayLayout.allCases) { Text($0.label).tag($0) }
+                }
+                LabeledContent("Accent color") { AccentColorButton(hex: $s.accentHex) }
+                LabeledContent("Presets") {
+                    HStack(spacing: 7) {
+                        ForEach(Theme.accentPresets, id: \.hex) { preset in
+                            Button { s.accentHex = preset.hex } label: {
+                                Circle().fill(Color(hex: preset.hex)).frame(width: 18, height: 18)
+                                    .overlay(Circle().strokeBorder(.primary.opacity(s.accentHex == preset.hex ? 0.9 : 0.15),
+                                                                   lineWidth: s.accentHex == preset.hex ? 2 : 1))
+                            }
+                            .buttonStyle(.plain).help(preset.name)
+                        }
+                    }
+                }
+                LabeledContent("Dim the game") {
+                    Slider(value: $s.overlayDim, in: 0...0.9).frame(width: 180)
+                }
+                LabeledContent("Player size") {
+                    HStack(spacing: 8) {
+                        Image(systemName: "rectangle.inset.filled").font(.caption).foregroundStyle(.secondary)
+                        Slider(value: $s.playerSize, in: Theme.playerSizeRange, step: 10).frame(width: 160)
+                        Image(systemName: "rectangle.inset.filled").font(.title3).foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(s.overlayLayout == .tiles)
+                .help("Width of the player in the Split layout and Classic's Gallery")
+                Toggle("Show hotkeys in the overlay", isOn: $s.showHotkeys)
+                Button("Preview overlay") { OverlayController.shared.show() }
+            } header: {
+                Text("Overlay")
+            } footer: {
+                Text("The accent color is used for Instant Replay, highlights and notifications. Click the swatch for the color wheel, or type a hex code. Changes apply the next time the overlay opens.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

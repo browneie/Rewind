@@ -6,7 +6,7 @@ A ShadowPlay-style screen recorder for macOS. Rewind keeps the last few minutes 
 
 **On Windows?** There's a native Windows port in [`windows/`](windows/README.md).
 
-![Rewind overlay over a game](docs/overlay.png)
+![Rewind overlay (Split layout) over a game](docs/overlay.png)
 
 ## Features
 
@@ -17,8 +17,8 @@ A ShadowPlay-style screen recorder for macOS. Rewind keeps the last few minutes 
 - **Hardware encoding.** Captures with ScreenCaptureKit and encodes H.264 or HEVC on the Apple media engine, so it's light on the CPU and GPU while you play.
 - **Audio.** System audio and/or microphone. By default your mic is mixed into the main track so clips play correctly everywhere; turn that off to keep them as separate tracks for editing.
 - **Auto-cleanup** (optional, off by default). Moves clips and screenshots older than a set number of days (14 by default) to the Trash. Only Rewind's own files are touched.
-- **Preview clips in the overlay.** Your latest clips and screenshots show as thumbnails under the tiles. Click one to play it right in the overlay (Space plays or pauses, ← → step a frame), show it in Finder, or move it to the Trash. Clicking a "saved" notice opens the clip there too.
-- **In-game overlay** (⌥Z). Works over fullscreen apps. Rewind's own windows never appear in your clips.
+- **Preview clips in the overlay.** Your newest clip is loaded in the overlay's player as soon as it opens, with the latest clips and screenshots as thumbnails under it. Click one to play it right in the overlay (Space plays or pauses, ← → step a frame), show it in Finder, or move it to the Trash. Clicking a "saved" notice opens the clip there too.
+- **In-game overlay** (⌥Z) with three layouts: **Classic** (ShadowPlay-style), **Tiles** (big buttons with your clips below) and **Split** (actions beside a player showing your newest clip). Pick the accent color from presets or the color wheel in Settings → Overlay. Works over fullscreen apps. Rewind's own windows never appear in your clips.
 - **Global hotkeys** that work while a game has focus, and can be changed in Settings.
 
 <p>
@@ -77,7 +77,7 @@ To check the capture → encode → replay → MP4 pipeline without screen permi
 
 ### Changing the look
 
-Overlay colors, size, roundness, opacity and text live in [`Sources/Rewind/Theme.swift`](Sources/Rewind/Theme.swift). There's also an interactive designer at [`design/overlay-mockup.html`](design/overlay-mockup.html): open it in a browser, tweak the design, and copy the exported values into `Theme.swift`.
+The layout, accent color, dimming and hotkey hints are in Settings → Overlay. Size, roundness, opacity and text live in [`Sources/Rewind/Theme.swift`](Sources/Rewind/Theme.swift).
 
 ## Known limitations
 
