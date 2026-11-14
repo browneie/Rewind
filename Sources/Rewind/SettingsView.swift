@@ -12,7 +12,8 @@ final class SettingsWindow {
             let host = NSHostingController(rootView: SettingsView())
             host.sizingOptions = [] // size the window ourselves; auto-sizing can collapse it to 2 px wide
             let w = NSWindow(contentViewController: host)
-            w.title = "Rewind Settings"
+            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+            w.title = "Rewind Settings · v\(version)"
             w.styleMask = [.titled, .closable, .miniaturizable]
             w.setContentSize(NSSize(width: 520, height: 680))
             w.isReleasedWhenClosed = false
@@ -237,6 +238,8 @@ struct SettingsView: View {
                     LabeledContent("Capturing now", value: c.captureInfo)
                 }
             }
+
+            UpdatesSection()
         }
         .formStyle(.grouped)
         .defaultScrollAnchor(.top)
@@ -323,5 +326,49 @@ private struct HotkeyField: View {
         recording = false
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
         HotkeyManager.shared.resume()
+    }
+}
+
+/// Bottom of Settings: version, automatic checks and the Check for Updates button.
+private struct UpdatesSection: View {
+    @ObservedObject private var s = Settings.shared
+    @ObservedObject private var u = Updater.shared
+
+    var body: some View {
+        Section {
+            LabeledContent("Version", value: u.currentVersion)
+            Toggle("Check for updates when Rewind starts", isOn: $s.checkForUpdates)
+            HStack {
+                switch u.state {
+                case .available(let r):
+                    Button("Install Rewind \(r.version)") { u.install(r) }.keyboardShortcut(.defaultAction)
+                    if let page = r.pageURL { Link("What's new", destination: page).font(.callout) }
+                case .downloading, .installing:
+                    Button("Check for Updates") {}.disabled(true)
+                default:
+                    Button("Check for Updates") { u.check(userInitiated: true) }
+                        .disabled(u.state == .checking)
+                }
+                Spacer()
+                status
+            }
+        } header: {
+            Text("Updates")
+        } footer: {
+            Text("Updates come from Rewind's GitHub releases. Each one is checked against Rewind's signing key before it's installed, then Rewind reopens by itself.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var status: some View {
+        switch u.state {
+        case .checking: HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Checking…") }.foregroundStyle(.secondary)
+        case .upToDate: Label("Rewind is up to date", systemImage: "checkmark.circle.fill").foregroundStyle(.secondary)
+        case .available(let r): Text("Version \(r.version) is available").foregroundStyle(.secondary)
+        case .downloading: HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Downloading…") }.foregroundStyle(.secondary)
+        case .installing: Text("Installing…").foregroundStyle(.secondary)
+        case .failed(let m): Text(m).foregroundStyle(.orange).lineLimit(2).font(.caption)
+        case .idle: EmptyView()
+        }
     }
 }

@@ -222,6 +222,7 @@ final class Settings: ObservableObject {
         static let cleanup = "autoCleanup", cleanupDays = "cleanupDays"
         static let appPrefixes = "appPrefixes"
         static let playerSize = "playerSize", customMbps = "customMbps"
+        static let autoUpdate = "checkForUpdates"
         static let layout = "overlayLayout", accent = "accentColor", dim = "overlayDim", showHotkeys = "showHotkeys"
     }
 
@@ -251,6 +252,8 @@ final class Settings: ObservableObject {
     @Published var playerSize: Double { didSet { d.set(playerSize, forKey: K.playerSize) } }
     /// Bitrate in Mbps when Quality is "Custom bitrate".
     @Published var customMbps: Int { didSet { d.set(customMbps, forKey: K.customMbps) } }
+    /// Check GitHub for a newer version when Rewind starts.
+    @Published var checkForUpdates: Bool { didSet { d.set(checkForUpdates, forKey: K.autoUpdate) } }
 
     var accentColor: Color {
         get { Color(hex: accentHex) }
@@ -265,7 +268,7 @@ final class Settings: ObservableObject {
             K.fps: 60, K.quality: Quality.high.rawValue, K.codec: VideoCodec.h264.rawValue,
             K.resolution: 0, K.cursor: true, K.sysAudio: true, K.mic: false, K.mixMic: true,
             K.replay: 120, K.startReplay: true, K.cleanup: false, K.cleanupDays: 14,
-            K.layout: OverlayLayout.panes.rawValue, K.accent: Int(Theme.defaultAccent), K.dim: 0.6, K.showHotkeys: true, K.playerSize: Theme.defaultPlayerSize, K.customMbps: 20,
+            K.layout: OverlayLayout.panes.rawValue, K.accent: Int(Theme.defaultAccent), K.dim: 0.6, K.showHotkeys: true, K.playerSize: Theme.defaultPlayerSize, K.customMbps: 20, K.autoUpdate: true,
         ])
         displayID = UInt32(clamping: d.integer(forKey: K.display))
         captureAppID = d.string(forKey: K.appID) ?? ""
@@ -287,6 +290,7 @@ final class Settings: ObservableObject {
         accentHex = UInt32(clamping: d.integer(forKey: K.accent)) & 0xFFFFFF
         overlayDim = min(max(d.double(forKey: K.dim), 0), 0.9)
         showHotkeys = d.bool(forKey: K.showHotkeys)
+        checkForUpdates = d.bool(forKey: K.autoUpdate)
         customMbps = min(max(d.integer(forKey: K.customMbps), Quality.customMbpsRange.lowerBound), Quality.customMbpsRange.upperBound)
         playerSize = min(max(d.double(forKey: K.playerSize), Theme.playerSizeRange.lowerBound), Theme.playerSizeRange.upperBound)
         outputDirectory = d.string(forKey: K.output).map { URL(fileURLWithPath: $0) }

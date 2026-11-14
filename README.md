@@ -8,6 +8,7 @@ A ShadowPlay-style screen recorder for macOS. Rewind keeps the last few minutes 
 
 ## Features
 
+- **Automatic updates.** Rewind checks for new versions and installs them itself when you click the notice.
 - **Instant Replay.** Keeps the last 15 seconds to 20 minutes ready to save with one hotkey. Clips are written without re-encoding, so saving is near-instant.
 - **Recording.** Start/stop a normal recording at any time; it runs alongside Instant Replay.
 - **Screenshots.** Full-resolution PNG of the display.
@@ -42,12 +43,20 @@ In the overlay, **left-click** Instant Replay to save a clip and **right-click**
 
 ## Install
 
-1. Download `Rewind-<version>-macOS.zip` from [Releases](../../releases) and unzip it.
-2. Move **Rewind.app** to `/Applications`.
+1. Download `Rewind-<version>-macOS.dmg` from [Releases](../../releases) and open it.
+2. Drag **Rewind** onto the **Applications** shortcut, then eject the disk image.
 3. The app isn't notarized, so the first time, **right-click Rewind.app → Open → Open**. If macOS still blocks it, go to System Settings → Privacy & Security and click **Open Anyway**.
 4. Allow **Screen & System Audio Recording** when asked, then quit and reopen Rewind (see below).
 
 Requires macOS 15 Sequoia or later, on Apple Silicon or Intel.
+
+### Updates
+
+Rewind checks GitHub for a new version when it starts (turn this off in Settings → Updates). If there is one, a notice stays up for about a minute and a half: click it to update, or click ✕ to skip. You can also check any time with **Check for Updates** at the bottom of Settings.
+
+Updating downloads the release's .dmg into a temporary folder, opens it out of sight, checks the app inside is signed with the same certificate as your copy (anything else is refused), swaps the app and reopens it. You don't need to download, mount or eject anything yourself. Rewind needs to be in a folder it can write to, like Applications.
+
+Your version number is in the title of the Settings window and under Settings → Updates.
 
 ### Permissions
 
@@ -78,10 +87,12 @@ Requires Xcode 16 or later.
 
 ```bash
 ./build.sh            # builds build/Rewind.app for this Mac
-./release.sh 1.0.0    # universal, ad-hoc signed zip in dist/
+./release.sh 1.6.0    # universal, signed .dmg in dist/ (also what the updater downloads)
 ```
 
-`build.sh` signs with your Apple Development certificate if you have one, so the Screen Recording permission survives rebuilds. Set `SIGN_IDENTITY=-` to sign ad-hoc instead.
+`release.sh` signs the app and the .dmg with a code-signing certificate named "Rewind Release" in the login keychain (not in this repo). The updater only installs apps signed with that same certificate, and keeping it means macOS keeps Rewind's Screen Recording permission across updates.
+
+`build.sh` signs with the "Rewind Release" certificate if it's in your keychain, otherwise an Apple Development certificate, so the permission survives rebuilds. Set `SIGN_IDENTITY=-` to sign ad-hoc instead.
 
 To check the capture → encode → replay → MP4 pipeline without screen permission:
 

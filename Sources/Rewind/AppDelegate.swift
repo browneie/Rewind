@@ -32,6 +32,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .store(in: &cancellables)
 
         controller.startCleanupSchedule()
+        if settings.checkForUpdates {
+            // The update notice goes first: other launch notices wait for the check (8 s at most).
+            Toast.hold(upTo: 8)
+            Updater.shared.check(userInitiated: false)
+        }
 
         if !CGPreflightScreenCaptureAccess() {
             CGRequestScreenCaptureAccess()
