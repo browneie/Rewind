@@ -182,6 +182,65 @@ static class Native
         return GetDpiForMonitor(hmon, 0 /* effective */, out uint x, out _) == 0 && x > 0 ? x / 96.0 : 1;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct WINDOWPLACEMENT { public int length, flags, showCmd; public POINT ptMin, ptMax; public RECT rcNormal; }
+
+    [DllImport("user32.dll")] static extern bool GetWindowPlacement(IntPtr hwnd, ref WINDOWPLACEMENT wp);
+    [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern IntPtr MonitorFromRect(ref RECT rect, uint flags);
+
+    /// Whether the window covers its whole monitor, like a fullscreen game. A minimized window is judged by where
+    /// it will be restored, so a fullscreen game counts as fullscreen while it's alt-tabbed away from.
+    public static bool FillsMonitor(IntPtr hwnd)
+    {
+        const long WS_CAPTION = 0xC00000;
+        RECT r;
+        IntPtr mon;
+        if (IsIconic(hwnd))
+        {
+            var wp = new WINDOWPLACEMENT { length = Marshal.SizeOf<WINDOWPLACEMENT>() };
+            if (!GetWindowPlacement(hwnd, ref wp)) return false;
+            r = wp.rcNormal;
+            mon = MonitorFromRect(ref r, MONITOR_DEFAULTTONEAREST);
+            // The restored position is relative to the work area, not the screen.
+            var wm = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>() };
+            if ((GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64() & WS_EX_TOOLWINDOW) == 0 && GetMonitorInfo(mon, ref wm))
+            {
+                int dx = wm.rcWork.Left - wm.rcMonitor.Left, dy = wm.rcWork.Top - wm.rcMonitor.Top;
+                r = new RECT { Left = r.Left + dx, Top = r.Top + dy, Right = r.Right + dx, Bottom = r.Bottom + dy };
+            }
+        }
+        else
+        {
+            // A maximized app window (with an auto-hidden taskbar) can cover the screen too, but isn't fullscreen.
+            if (IsZoomed(hwnd) && (GetWindowLongPtr(hwnd, -16 /* GWL_STYLE */).ToInt64() & WS_CAPTION) == WS_CAPTION) return false;
+            if (!GetWindowRect(hwnd, out r)) return false;
+            mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        }
+        var mi = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>() };
+        if (!GetMonitorInfo(mon, ref mi)) return false;
+        var m = mi.rcMonitor;
+        return r.Left <= m.Left && r.Top <= m.Top && r.Right >= m.Right && r.Bottom >= m.Bottom;
+    }
+
+    /// The monitor a window is on, or will be restored to if it's minimized.
+    public static IntPtr MonitorOf(IntPtr hwnd)
+    {
+        if (!IsIconic(hwnd)) return MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        var wp = new WINDOWPLACEMENT { length = Marshal.SizeOf<WINDOWPLACEMENT>() };
+        if (!GetWindowPlacement(hwnd, ref wp)) return MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        return MonitorFromRect(ref wp.rcNormal, MONITOR_DEFAULTTONEAREST);
+    }
+
+    /// Whether the focused window belongs to the given process.
+    public static bool ProcessIsForeground(uint pid)
+    {
+        var fg = GetForegroundWindow();
+        if (fg == IntPtr.Zero) return false;
+        GetWindowThreadProcessId(fg, out uint fgPid);
+        return fgPid == pid;
+    }
+
     public static (RECT bounds, RECT work) MonitorUnderCursor()
     {
         var hmon = MonitorFromPoint(CursorPos(), MONITOR_DEFAULTTONEAREST);

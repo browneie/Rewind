@@ -22,18 +22,22 @@ sealed class CaptureEngine
     public string? CapturedApp { get; private set; }
     public List<string> Warnings { get; } = new();
 
-    sealed record Target(GraphicsCaptureItem Item, string? AppName, uint Pid);
+    /// One app's window (Window set) or a whole display (Monitor set).
+    sealed record Target(GraphicsCaptureItem Item, string? AppName, uint Pid, IntPtr Window, IntPtr Monitor);
 
     static Target ResolveTarget(string displayId, string appId)
     {
         if (appId.Length > 0 && AppTarget.FindWindow(appId) is { } w)
         {
-            try { return new Target(Gpu.ItemForWindow(w.Hwnd), w.Name, w.Pid); }
+            try { return new Target(Gpu.ItemForWindow(w.Hwnd), w.Name, w.Pid, w.Hwnd, IntPtr.Zero); }
             catch (Exception e) { Log.Error("capture item for window", e); }
         }
         var d = Displays.Find(displayId) ?? throw new RewindException("No display found to capture.");
-        return new Target(Gpu.ItemForMonitor(d.Handle), null, 0);
+        return new Target(Gpu.ItemForMonitor(d.Handle), null, 0, IntPtr.Zero, d.Handle);
     }
+
+    /// Displays, and apps while they're fullscreen, are captured with Desktop Duplication; see Duplicator.
+    static bool Duplicates(Target t) => t.Window == IntPtr.Zero || Native.FillsMonitor(t.Window);
 
     public Task StartAsync(CaptureSignature sig) => Task.Run(() =>
     {
@@ -105,6 +109,13 @@ sealed class CaptureEngine
         ID3D11Texture2D? heldTexture;
         const int PoolBuffers = 3;
 
+        Target? target;
+        Duplicator? dup;
+        Thread? dupThread;
+        bool cantDuplicate, closedReported;
+        Timer? watcher;
+        readonly object switchLock = new();
+
         public CaptureSignature Signature => sig;
         public long Arrived, Accepted, NoSurface;
         public long EncoderDropped => encoder?.Dropped ?? 0;
@@ -113,8 +124,9 @@ sealed class CaptureEngine
         {
             lock (frameLock)
             {
-                if (disposed || failed || heldTexture == null) return null;
-                return ReadBack(gpu!, heldTexture, lastContent);
+                if (disposed || failed) return null;
+                if (dup != null) return dup.Canvas == null ? null : ReadBack(gpu!, dup.Canvas, new SizeInt32 { Width = dup.Width, Height = dup.Height });
+                return heldTexture == null ? null : ReadBack(gpu!, heldTexture, lastContent);
             }
         }
 
@@ -134,7 +146,7 @@ sealed class CaptureEngine
         public void Start()
         {
             gpu = Gpu.Create();
-            var target = ResolveTarget(sig.DisplayId, sig.AppId);
+            target = ResolveTarget(sig.DisplayId, sig.AppId);
             item = target.Item;
             AppName = target.AppName;
             var native = (item.Size.Width, item.Size.Height);
@@ -147,12 +159,7 @@ sealed class CaptureEngine
             converter = new FrameConverter(gpu, size.W, size.H, sig.Fps);
             encoder = new VideoEncoder(gpu, size.W, size.H, sig.Fps, sig.Codec, bitrate, f => owner.OnVideo?.Invoke(f), tuning);
 
-            poolSize = item.Size;
-            pool = Direct3D11CaptureFramePool.CreateFreeThreaded(gpu.WinRTDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, PoolBuffers, poolSize);
-            pool.FrameArrived += (p, _) => OnFrame(p);
-            item.Closed += (_, _) => owner.TargetClosed(this);
-            session = pool.CreateCaptureSession(item);
-            Configure(session, sig.ShowCursor, sig.Fps);
+            item.Closed += (_, _) => ReportClosed();
 
             // Audio. When capturing one app, record only that app's sound (and its child processes').
             if (sig.SystemAudio)
@@ -178,7 +185,10 @@ sealed class CaptureEngine
                 catch (Exception e) { Log.Error("microphone", e); owner.Warnings.Add("Microphone: " + e.Message); }
             }
 
-            session.StartCapture();
+            if (!(Duplicates(target) && StartDuplication())) StartWgc();
+            Log.Info(dup != null ? "capture: Desktop Duplication" : "capture: Windows.Graphics.Capture");
+            // An app can go fullscreen or back to a window at any time.
+            if (target.Window != IntPtr.Zero) watcher = new Timer(_ => Watch(), null, 250, 250);
             Info = (AppName != null ? $"{AppName} · " : "") +
                    $"{size.W}×{size.H} · {sig.Fps} fps · {sig.Codec.Short()} · {encoder.Bitrate / 1_000_000} Mbps" +
                    (encoder.IsHardware ? "" : " · software");
@@ -186,11 +196,172 @@ sealed class CaptureEngine
 
         public void ForceKeyframe() => encoder?.ForceKeyframe();
 
-        void OnFrame(Direct3D11CaptureFramePool p)
+        void ReportClosed()
+        {
+            lock (switchLock)
+            {
+                if (closedReported) return;
+                closedReported = true;
+            }
+            owner.TargetClosed(this);
+        }
+
+        void Watch()
+        {
+            if (!Monitor.TryEnter(switchLock)) return;
+            try
+            {
+                if (disposed || failed || closedReported) return;
+                var t = target!;
+                if (!Native.IsWindow(t.Window)) { ReportClosed(); return; }
+                bool want = !cantDuplicate && Duplicates(t);
+                if (want && dup == null)
+                {
+                    StopWgc();
+                    if (StartDuplication()) Log.Info("capture: the app went fullscreen, switched to Desktop Duplication");
+                    else StartWgc();
+                }
+                else if (want && dup != null && dup.Monitor != Native.MonitorOf(t.Window))
+                {
+                    StopDuplication();
+                    if (!StartDuplication()) StartWgc();
+                }
+                else if (!want && dup != null)
+                {
+                    StartWgc();
+                    StopDuplication();
+                    Log.Info("capture: the app left fullscreen, switched to window capture");
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Error("capture switch", e);
+            }
+            finally { Monitor.Exit(switchLock); }
+        }
+
+        void StartWgc()
+        {
+            var size = item!.Size;
+            var p = Direct3D11CaptureFramePool.CreateFreeThreaded(gpu!.WinRTDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, PoolBuffers, size);
+            p.FrameArrived += (fp, _) => OnFrame(fp, p);
+            var s = p.CreateCaptureSession(item);
+            Configure(s, sig.ShowCursor, sig.Fps);
+            lock (frameLock) { poolSize = size; pool = p; session = s; }
+            s.StartCapture();
+        }
+
+        void StopWgc()
+        {
+            GraphicsCaptureSession? s;
+            Direct3D11CaptureFramePool? p;
+            lock (frameLock) { s = session; p = pool; session = null; pool = null; Hold(null, null); }
+            try { s?.Dispose(); } catch { }
+            try { p?.Dispose(); } catch { }
+        }
+
+        bool StartDuplication()
+        {
+            if (cantDuplicate) return false;
+            var t = target!;
+            var monitor = t.Window != IntPtr.Zero ? Native.MonitorOf(t.Window) : t.Monitor;
+            var d = Duplicator.TryCreate(gpu!, monitor, sig.ShowCursor, out var why);
+            if (d == null)
+            {
+                cantDuplicate = true;
+                Log.Info("Desktop Duplication isn't available (" + why + "), using Windows.Graphics.Capture");
+                return false;
+            }
+            lock (frameLock) dup = d;
+            var th = new Thread(() => DuplicationLoop(d)) { IsBackground = true, Name = "Desktop Duplication", Priority = ThreadPriority.AboveNormal };
+            dupThread = th;
+            th.Start();
+            return true;
+        }
+
+        void StopDuplication()
+        {
+            Duplicator? d;
+            lock (frameLock) { d = dup; dup = null; }
+            var th = dupThread;
+            dupThread = null;
+            if (th != null && th != Thread.CurrentThread) th.Join(2000);
+            lock (frameLock) d?.Dispose();
+        }
+
+        void DuplicationLoop(Duplicator d)
+        {
+            // Only the app's own picture is wanted: while it's in the background, other windows are on its screen.
+            uint appPid = target!.Window != IntPtr.Zero ? target.Pid : 0;
+            while (true)
+            {
+                bool got;
+                long pts;
+                bool changed;
+                try { got = d.Acquire(out pts, out changed); }
+                catch (Exception e) { Fail(e); return; }
+                lock (frameLock)
+                {
+                    if (disposed || failed || dup != d) { d.Release(); return; }
+                    if (!got)
+                    {
+                        if (d.Broken) { d.Release(); ThreadPool.QueueUserWorkItem(_ => FallBackToWgc(d)); return; }
+                        continue;
+                    }
+                    try
+                    {
+                        Arrived++;
+                        bool skip = !changed || owner.Paused || (appPid != 0 && !Native.ProcessIsForeground(appPid))
+                                    || (nextFrame != long.MinValue && pts < nextFrame - interval / 8);
+                        if (skip) { d.Release(); continue; }
+                        nextFrame = nextFrame == long.MinValue || pts - nextFrame > interval ? pts + interval : nextFrame + interval;
+
+                        Accepted++;
+                        d.Render();
+                        d.Release();
+                        var sample = converter!.Convert(d.Canvas!, d.Width, d.Height);
+                        if (sample != null) encoder!.Encode(sample, pts);
+                        else NoSurface++;
+                    }
+                    catch (Exception e)
+                    {
+                        d.Release();
+                        Fail(e);
+                        return;
+                    }
+                }
+            }
+        }
+
+        void FallBackToWgc(Duplicator d)
+        {
+            lock (switchLock)
+            {
+                if (disposed || failed || dup != d) return;
+                cantDuplicate = true;
+                Log.Info("Desktop Duplication stopped working, using Windows.Graphics.Capture");
+                StopDuplication();
+                try { StartWgc(); }
+                catch (Exception e) { Fail(e); }
+            }
+        }
+
+        void Fail(Exception e)
         {
             lock (frameLock)
             {
-                if (disposed || failed) return;
+                if (failed) return;
+                failed = true;
+            }
+            Log.Error("capture frame", e);
+            owner.Died(this, e);
+        }
+
+        void OnFrame(Direct3D11CaptureFramePool p, Direct3D11CaptureFramePool mine)
+        {
+            lock (frameLock)
+            {
+                if (disposed || failed || !ReferenceEquals(pool, mine)) return;
                 try
                 {
                     var frame = p.TryGetNextFrame();
@@ -228,15 +399,19 @@ sealed class CaptureEngine
 
         public void Dispose()
         {
-            foreach (var a in audio) a.Dispose();
-            audio.Clear();
-            try { session?.Dispose(); } catch { }
-            lock (frameLock) { disposed = true; Hold(null, null); }
-            try { pool?.Dispose(); } catch { }
-            encoder?.Dispose();
-            converter?.Dispose();
-            gpu?.Dispose();
-            session = null; pool = null; encoder = null; converter = null; gpu = null;
+            watcher?.Dispose();
+            lock (switchLock)
+            {
+                foreach (var a in audio) a.Dispose();
+                audio.Clear();
+                lock (frameLock) disposed = true;
+                StopDuplication();
+                StopWgc();
+                encoder?.Dispose();
+                converter?.Dispose();
+                gpu?.Dispose();
+                encoder = null; converter = null; gpu = null;
+            }
         }
     }
 
@@ -292,6 +467,10 @@ sealed class CaptureEngine
         MF.Startup();
         using var gpu = Gpu.Create();
         var target = ResolveTarget(displayId, appId);
+        bool app = target.Window != IntPtr.Zero;
+        if (Duplicates(target) && (!app || Native.ProcessIsForeground(target.Pid))
+            && DuplicateOnce(gpu, app ? Native.MonitorOf(target.Window) : target.Monitor, showCursor) is { } shot)
+            return shot;
         var size = target.Item.Size;
         using var pool = Direct3D11CaptureFramePool.CreateFreeThreaded(gpu.WinRTDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, size);
         var tcs = new TaskCompletionSource<BitmapSource>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -312,6 +491,24 @@ sealed class CaptureEngine
         var done = await Task.WhenAny(tcs.Task, Task.Delay(6000));
         if (done != tcs.Task) throw new RewindException("The screen didn't send a frame. Try again, or turn on Instant Replay.");
         return await tcs.Task;
+    }
+
+    static BitmapSource? DuplicateOnce(Gpu gpu, IntPtr monitor, bool showCursor)
+    {
+        using var d = Duplicator.TryCreate(gpu, monitor, showCursor, out var why);
+        if (d == null) { Log.Info("screenshot: Desktop Duplication isn't available (" + why + ")"); return null; }
+        // The first frame after starting has the whole screen.
+        for (var end = DateTime.UtcNow.AddSeconds(2); DateTime.UtcNow < end;)
+        {
+            if (!d.Acquire(out _, out _)) continue;
+            try
+            {
+                d.Render();
+                return ReadBack(gpu, d.Canvas!, new SizeInt32 { Width = d.Width, Height = d.Height });
+            }
+            finally { d.Release(); }
+        }
+        return null;
     }
 
     static BitmapSource ReadBack(Gpu gpu, ID3D11Texture2D tex, SizeInt32 content)

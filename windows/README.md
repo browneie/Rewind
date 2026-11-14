@@ -12,7 +12,7 @@ The Windows port of [Rewind](../README.md), the ShadowPlay-style screen recorder
 - **Recording.** Start/stop a normal recording at any time; it runs alongside Instant Replay.
 - **Screenshots.** Full-resolution PNG of the display.
 - **Capture one app.** Choose an app (a game, say) in Settings, and only its window and sound are recorded, so notifications and other apps stay out of your clips. If the app isn't running, Rewind records the whole display and switches over automatically when the app opens. Clips of that app are named after it, like `Roblox 2026-11-13 at 16.53.58.mp4`. Games that run inside Java, Python or Electron are named from their window title, so Minecraft clips say Minecraft rather than Java.
-- **Hardware encoding.** Captures with Windows.Graphics.Capture and encodes H.264 or HEVC on the GPU (NVIDIA NVENC, Intel Quick Sync or AMD AMF), so it's light on the CPU while you play.
+- **Hardware encoding.** Captures with Desktop Duplication or Windows.Graphics.Capture and encodes H.264 or HEVC on the GPU (NVIDIA NVENC, Intel Quick Sync or AMD AMF), so it's light on the CPU while you play.
 - **Audio.** System audio and/or microphone. By default your mic is mixed into the main track so clips play correctly everywhere; turn that off to keep them as separate tracks for editing.
 - **Auto-cleanup** (optional, off by default). Moves clips and screenshots older than a set number of days (14 by default) to the Recycle Bin. Only Rewind's own files are touched.
 - **Preview and trim clips in the overlay.** Your newest clip is loaded in the overlay's player as soon as it opens, with the latest clips and screenshots as thumbnails under it. Click one to play it right in the overlay (Space plays or pauses, ← → step a frame), trim it, show it in Explorer, or move it to the Recycle Bin. Clicking a "saved" notification opens the clip there too. Trimming saves a new file next to the original (`… (trimmed).mp4`) without re-encoding, so it's instant and loses no quality.
@@ -118,7 +118,7 @@ The files mirror `Sources/Rewind/` one to one, so a change on one side is easy t
 
 | macOS | Windows | File |
 |---|---|---|
-| ScreenCaptureKit | Windows.Graphics.Capture (display or window), `SetWindowDisplayAffinity` to hide Rewind's own windows | `CaptureEngine.cs`, `Gpu.cs` |
+| ScreenCaptureKit | Desktop Duplication for displays and fullscreen apps (with the mouse pointer drawn in by Rewind), Windows.Graphics.Capture for app windows, `SetWindowDisplayAffinity` to hide Rewind's own windows | `CaptureEngine.cs`, `Duplication.cs`, `Gpu.cs` |
 | VideoToolbox (Apple media engine) | Media Foundation hardware encoder MFT, fed NV12 surfaces converted on the GPU by the D3D11 video processor | `VideoEncoder.cs`, `Gpu.cs` |
 | ScreenCaptureKit audio | WASAPI loopback, microphone, and per-process loopback for "capture one app" | `AudioCapture.cs` |
 | AVAssetWriter | A small built-in MP4 muxer (H.264/HEVC passed through, AAC from Media Foundation's encoder) | `Mp4Muxer.cs`, `Writers.cs` |
@@ -139,6 +139,7 @@ The files mirror `Sources/Rewind/` one to one, so a change on one side is easy t
 - Opening the overlay takes focus from the game, so games that pause on focus loss will pause.
 - The overlay and notifications can't draw over games in *exclusive* fullscreen; use borderless or windowed fullscreen (most games default to it now). Capture itself works either way.
 - "Capture one app" records the app's largest window. On Windows 11 24H2 its menus and pop-ups are included; on older versions they aren't. A minimized window records nothing new until it's restored.
+- While the chosen app is fullscreen, Rewind records its screen rather than its window, because Windows' window capture makes the mouse pointer disappear in some fullscreen games (Minecraft, for one). It records only while the app is in front, but anything drawn over the game by another app, like Discord's or the Xbox Game Bar's overlay, is in the clip too.
 - On Windows 10, Windows draws a yellow border around whatever is being captured. Windows 11 lets Rewind hide it.
 - With "Mix microphone into the main track" turned off, system audio and mic are separate tracks. Video editors use both; VLC, browsers and Discord play the first (system audio), while Windows' own Media Player plays the last one (the mic).
 - Protected video (DRM, e.g. some streaming sites) records as black, as with every Windows capture tool.
