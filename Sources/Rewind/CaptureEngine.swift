@@ -21,6 +21,8 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
         let filter: SCContentFilter
         /// Name of the app being captured, or nil when capturing the whole display.
         let appName: String?
+        /// The display the picture comes from.
+        let displayID: CGDirectDisplayID
     }
 
     /// What to capture. With an app chosen and running: only that app's windows (and audio), on the display
@@ -50,14 +52,15 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
                     AppTarget.key(bundleID: $0.bundleIdentifier, name: $0.applicationName) == appID
                 }
                 return Target(filter: SCContentFilter(display: display, including: apps, exceptingWindows: []),
-                              appName: app.applicationName)
+                              appName: app.applicationName, displayID: display.displayID)
             }
         }
         let pid = ProcessInfo.processInfo.processIdentifier
         let mine = content.applications.filter { $0.processID == pid }
         if mine.isEmpty { NSLog("Rewind: couldn't find itself to exclude from capture") }
+        // A display: every app's sound except Rewind's own (system audio), not just apps with windows on that display.
         return Target(filter: SCContentFilter(display: chosenDisplay, excludingApplications: mine, exceptingWindows: []),
-                      appName: nil)
+                      appName: nil, displayID: chosenDisplay.displayID)
     }
 
     /// Name of the app being captured right now, or nil for the whole display.
@@ -106,7 +109,12 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
             throw error
         }
         capturedApp = target.appName
-        info = (target.appName.map { "\($0) · " } ?? "") + "\(Int(size.width))×\(Int(size.height)) · \(sig.fps) fps · \(sig.codec.short) · \(bitrate / 1_000_000) Mbps"
+        let source: String
+        if let app = target.appName { source = app } else {
+            let id = target.displayID
+            source = await MainActor.run { Displays.info(for: id)?.short ?? "Display" }
+        }
+        info = "\(source) · " + "\(Int(size.width))×\(Int(size.height)) · \(sig.fps) fps · \(sig.codec.short) · \(bitrate / 1_000_000) Mbps"
     }
 
     func stop() async {

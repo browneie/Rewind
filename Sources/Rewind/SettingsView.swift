@@ -26,24 +26,13 @@ final class SettingsWindow {
     }
 }
 
-private struct DisplayOption: Identifiable, Hashable {
-    let id: UInt32
-    let name: String
-}
-
 struct SettingsView: View {
     @ObservedObject private var s = Settings.shared
     @ObservedObject private var c = Controller.shared
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var runningApps = AppTarget.pickable()
 
-    private var displays: [DisplayOption] {
-        [DisplayOption(id: 0, name: "Main display")] + NSScreen.screens.compactMap { screen in
-            guard let n = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
-            let w = Int(screen.frame.width * screen.backingScaleFactor), h = Int(screen.frame.height * screen.backingScaleFactor)
-            return DisplayOption(id: n.uint32Value, name: "\(screen.localizedName) (\(w)×\(h))")
-        }
-    }
+    private var displays: [Displays.Info] { Displays.all() }
 
     private var estimate: String {
         let size = CaptureMath.outputSize(native: CaptureMath.nativePixelSize(displayID: s.displayID),
@@ -58,8 +47,13 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Capture", selection: appSelection) {
-                    Label("Entire display", systemImage: "display").tag("")
+                Picker("Capture", selection: captureSelection) {
+                    ForEach(displays) { d in
+                        Label(d.label, systemImage: d.number == 1 ? "laptopcomputer" : "display").tag("display:\(d.id)")
+                    }
+                    if s.captureAppID.isEmpty, !displays.contains(where: { $0.id == Displays.resolve(s.displayID) }) {
+                        Text("Disconnected display").tag("display:\(Displays.resolve(s.displayID))")
+                    }
                     Divider()
                     ForEach(runningApps, id: \.processIdentifier) { app in
                         Label {
@@ -78,9 +72,12 @@ struct SettingsView: View {
                 Text("What to capture")
             } footer: {
                 Text(s.captureAppID.isEmpty
-                     ? "Records everything on the display."
-                     : "Records only \(s.captureAppName)'s windows and sound. While it isn't running, Rewind records the whole display and switches over when it opens.")
+                     ? "Records everything on \(Displays.info(for: s.displayID)?.short ?? "the display"), with all system audio."
+                     : "Records only \(s.captureAppName)'s windows and sound. While it isn't running, Rewind records the fallback display below and switches over when it opens.")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+                runningApps = AppTarget.pickable() // re-render so plugged / unplugged screens show up
             }
             .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didLaunchApplicationNotification)) { _ in
                 runningApps = AppTarget.pickable()
@@ -90,8 +87,10 @@ struct SettingsView: View {
             }
 
             Section {
-                Picker(s.captureAppID.isEmpty ? "Display" : "Fallback display", selection: $s.displayID) {
-                    ForEach(displays) { Text($0.name).tag($0.id) }
+                if !s.captureAppID.isEmpty {
+                    Picker("Fallback display", selection: fallbackDisplay) {
+                        ForEach(displays) { Text($0.label).tag($0.id) }
+                    }
                 }
                 Picker("Resolution", selection: $s.resolution) {
                     ForEach(Resolution.allCases) { Text($0.label).tag($0) }
@@ -252,12 +251,24 @@ struct SettingsView: View {
             : "Game sound and your voice are saved as separate tracks, handy for editing. Some players only play the first one."
     }
 
-    private var appSelection: Binding<String> {
-        Binding(get: { s.captureAppID }, set: { key in
+    /// "display:<id>" for a screen, or an app key.
+    private var captureSelection: Binding<String> {
+        Binding(get: { s.captureAppID.isEmpty ? "display:\(Displays.resolve(s.displayID))" : s.captureAppID },
+                set: { key in
+            if key.hasPrefix("display:"), let id = UInt32(key.dropFirst("display:".count)) {
+                s.captureAppID = ""
+                s.captureAppName = ""
+                s.displayID = id
+                return
+            }
             s.captureAppName = runningApps.first { AppTarget.key(for: $0) == key }?.localizedName
                 ?? (key == s.captureAppID ? s.captureAppName : "")
             s.captureAppID = key
         })
+    }
+
+    private var fallbackDisplay: Binding<UInt32> {
+        Binding(get: { Displays.resolve(s.displayID) }, set: { s.displayID = $0 })
     }
 
     private func smallIcon(_ image: NSImage?) -> NSImage {

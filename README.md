@@ -11,7 +11,8 @@ A ShadowPlay-style screen recorder for macOS. Rewind keeps the last few minutes 
 - **Instant Replay.** Keeps the last 15 seconds to 20 minutes ready to save with one hotkey. Clips are written without re-encoding, so saving is near-instant.
 - **Recording.** Start/stop a normal recording at any time; it runs alongside Instant Replay.
 - **Screenshots.** Full-resolution PNG of the display.
-- **Capture one app.** Choose an app (a game, say) in Settings, and only its windows and sound are recorded, so notifications and other apps stay out of your clips. If the app isn't running, Rewind records the whole display and switches over automatically when the app opens. Clips of that app are named after it, like `Roblox 2026-11-13 at 16.53.58.mp4`.
+- **Pick a screen or an app.** In Settings → Capture, choose Display 1, Display 2 (and so on), or one app.
+- **Capture one app.** Choose an app (a game, say), and only its windows and sound are recorded, so notifications and other apps stay out of your clips. If the app isn't running, Rewind records the fallback display and switches over automatically when the app opens. Clips of that app are named after it, like `Roblox 2026-11-13 at 16.53.58.mp4`.
 - **Hardware encoding.** Captures with ScreenCaptureKit and encodes H.264 or HEVC on the Apple media engine, so it's light on the CPU and GPU while you play.
 - **Audio.** System audio and/or microphone. By default your mic is mixed into the main track so clips play correctly everywhere; turn that off to keep them as separate tracks for editing.
 - **Auto-cleanup** (optional, off by default). Moves clips and screenshots older than a set number of days (14 by default) to the Trash. Only Rewind's own files are touched.
@@ -44,9 +45,24 @@ In the overlay, **left-click** Instant Replay to save a clip and **right-click**
 1. Download `Rewind-<version>-macOS.zip` from [Releases](../../releases) and unzip it.
 2. Move **Rewind.app** to `/Applications`.
 3. The app isn't notarized, so the first time, **right-click Rewind.app → Open → Open**. If macOS still blocks it, go to System Settings → Privacy & Security and click **Open Anyway**.
-4. Allow **Screen Recording** when asked (System Settings → Privacy & Security → Screen Recording), then quit and reopen Rewind.
+4. Allow **Screen & System Audio Recording** when asked, then quit and reopen Rewind (see below).
 
 Requires macOS 15 Sequoia or later, on Apple Silicon or Intel.
+
+### Permissions
+
+Most of these are in **System Settings → Privacy & Security**. macOS asks for each one the first time Rewind needs it.
+
+| Permission | Needed? | What it's for |
+|---|---|---|
+| **Screen & System Audio Recording** | Required | Recording your screen and system sound, and taking screenshots. Turn Rewind on in the list, then quit and reopen Rewind; macOS only applies it after a restart. |
+| **Microphone** | Only if you turn on "Record microphone" | Recording your voice into clips. |
+| **Login Items** | Only if you turn on "Open Rewind at login" | Listed under System Settings → General → Login Items. |
+| **Files and Folders** | Only if you save clips to Desktop, Documents or Downloads | The default folder, `~/Movies/Rewind`, doesn't need it. |
+
+Rewind doesn't need Accessibility or Input Monitoring: its hotkeys use the system's global hotkey service, which needs no permission.
+
+If clips come out black or silent after an update, remove Rewind from the Screen & System Audio Recording list, add it again, and reopen Rewind. An unnotarized app's permission can reset when the app is replaced.
 
 Clips are saved to `~/Movies/Rewind` by default.
 
@@ -54,7 +70,7 @@ Clips are saved to `~/Movies/Rewind` by default.
 
 <img src="docs/settings.png" width="420" alt="Settings window">
 
-Choose what to capture (the whole display or one app), the display, resolution, frame rate (30/60/120), quality, codec, replay length, audio sources and whether to mix the mic in, save folder, auto-cleanup of old clips, hotkeys, and whether Rewind opens at login. The Settings window shows how much RAM the replay buffer will use.
+Choose what to capture (any connected display, or one app), resolution, frame rate (30/60/120), quality, codec, replay length, audio sources and whether to mix the mic in, save folder, auto-cleanup of old clips, hotkeys, and whether Rewind opens at login. The Settings window shows how much RAM the replay buffer will use.
 
 ## Build from source
 

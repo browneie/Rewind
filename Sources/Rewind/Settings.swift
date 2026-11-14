@@ -327,6 +327,35 @@ final class Settings: ObservableObject {
     }
 }
 
+// MARK: - Displays
+
+/// Connected screens, numbered the way macOS does: Display 1 is the one with the menu bar.
+@MainActor
+enum Displays {
+    struct Info: Identifiable, Hashable {
+        let id: UInt32
+        let number: Int
+        let name: String
+        let pixels: CGSize
+        var short: String { "Display \(number)" }
+        var label: String { "Display \(number) · \(name) (\(Int(pixels.width))×\(Int(pixels.height)))" }
+    }
+
+    static func all() -> [Info] {
+        NSScreen.screens.enumerated().compactMap { i, screen in
+            guard let n = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
+            return Info(id: n.uint32Value, number: i + 1, name: screen.localizedName,
+                        pixels: CGSize(width: screen.frame.width * screen.backingScaleFactor,
+                                       height: screen.frame.height * screen.backingScaleFactor))
+        }
+    }
+
+    /// The saved choice as a real display ID (0 means "the main display").
+    static func resolve(_ id: UInt32) -> UInt32 { id == 0 ? CGMainDisplayID() : id }
+
+    static func info(for id: UInt32) -> Info? { all().first { $0.id == resolve(id) } }
+}
+
 // MARK: - App targets
 
 /// Identifies an app to capture. Uses the bundle ID when there is one; apps without one
