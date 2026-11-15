@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -47,15 +48,15 @@ sealed class SettingsWindow : Window
     readonly List<Action> refreshers = new();
     bool building;
 
-    ComboBox appPicker = null!;
-    TextBlock captureFooter = null!, audioFooter = null!, estimate = null!, displayLabel = null!, capturingNow = null!;
+    ComboBox appPicker = null!, fallbackPicker = null!;
+    TextBlock captureFooter = null!, audioFooter = null!, estimate = null!, capturingNow = null!;
     CheckBox mixMic = null!;
     FrameworkElement capturingRow = null!;
     HotkeyField? recordingField;
 
     SettingsWindow()
     {
-        Title = "Rewind Settings";
+        Title = $"Rewind Settings · v{Updater.CurrentVersion}";
         Width = 580;
         Height = 760;
         MinWidth = 480;
@@ -74,11 +75,15 @@ sealed class SettingsWindow : Window
         Deactivated += (_, _) => recordingField?.Cancel();
         s.Changed += Refresh;
         c.StateChanged += Refresh;
+        // Screens plugged in or out show up in the menus right away.
+        EventHandler displaysChanged = (_, _) => Dispatcher.BeginInvoke(() => { FillApps(); FillFallback(); Refresh(); });
+        SystemEvents.DisplaySettingsChanged += displaysChanged;
         Closed += (_, _) =>
         {
             recordingField?.Cancel();
             s.Changed -= Refresh;
             c.StateChanged -= Refresh;
+            SystemEvents.DisplaySettingsChanged -= displaysChanged;
         };
         Refresh();
     }
@@ -91,7 +96,14 @@ sealed class SettingsWindow : Window
         appPicker.DropDownOpened += (_, _) => FillApps();
         appPicker.SelectionChanged += (_, _) =>
         {
-            if (building || appPicker.SelectedItem is not ComboBoxItem { Tag: AppChoice choice }) return;
+            if (building || appPicker.SelectedItem is not ComboBoxItem { Tag: CaptureChoice choice }) return;
+            if (choice.DisplayId != null)
+            {
+                s.CaptureAppId = "";
+                s.CaptureAppName = "";
+                s.DisplayId = choice.DisplayId;
+                return;
+            }
             s.CaptureAppName = choice.Name;
             s.CaptureAppId = choice.Key;
         };
@@ -99,24 +111,41 @@ sealed class SettingsWindow : Window
         captureFooter = Footer("");
         Section("What to capture", new[] { Row("Capture", appPicker) }, captureFooter);
 
-        displayLabel = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
-        var displays = new List<(string, string)> { ("Main display", "") };
-        displays.AddRange(Displays.All().Select(d => (d.Name, d.Id)));
+        fallbackPicker = new ComboBox { MinWidth = 240 };
+        fallbackPicker.DropDownOpened += (_, _) => FillFallback();
+        fallbackPicker.SelectionChanged += (_, _) =>
+        {
+            if (!building && fallbackPicker.SelectedItem is ComboBoxItem { Tag: string id }) s.DisplayId = id;
+        };
+        FillFallback();
+        var fallbackRow = Row("Fallback display", fallbackPicker);
+        refreshers.Add(() => fallbackRow.Visibility = s.CaptureAppId.Length > 0 ? Visibility.Visible : Visibility.Collapsed);
         var bitrateRow = Row("Bitrate", BitrateBox());
-        var videoFooter = Footer("120 fps makes Windows capture and convert twice as many frames as 60 fps, which uses more of the GPU your game is using. 60 fps is easier on frame rates.");
+        var videoFooter = Footer("");
         refreshers.Add(() =>
         {
             bitrateRow.Visibility = s.Quality == Quality.Custom ? Visibility.Visible : Visibility.Collapsed;
-            videoFooter.Visibility = s.Fps >= 120 ? Visibility.Visible : Visibility.Collapsed;
+            var notes = new List<string>();
+            if (s.Fps >= 120)
+                notes.Add("120 fps makes Windows capture and convert twice as many frames as 60 fps, which uses more of the GPU your game is using. 60 fps is easier on frame rates.");
+            if (s.Codec == VideoCodec.Av1)
+                notes.Add(VideoEncoder.HasHardwareEncoder(VideoCodec.Av1)
+                    ? "AV1 clips play in browsers, Discord and VLC. Windows' own players need the free AV1 Video Extension, and older phones can't play them."
+                    : "This PC's graphics card can't record AV1, so recording won't start. Choose H.264 or HEVC.");
+            videoFooter.Text = string.Join("\n\n", notes);
+            videoFooter.Visibility = notes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         });
+        // AV1 is offered only on graphics cards that can encode it (or kept visible if it was chosen on another card).
+        var codecs = Enum.GetValues<VideoCodec>()
+            .Where(v => v != VideoCodec.Av1 || s.Codec == VideoCodec.Av1 || VideoEncoder.HasHardwareEncoder(VideoCodec.Av1));
         Section("Video", new[]
         {
-            Row(displayLabel, Combo(displays, s.DisplayId, v => s.DisplayId = v)),
+            fallbackRow,
             Row("Resolution", Combo(Enum.GetValues<Resolution>().Select(r => (r.Label(), r)), s.Resolution, v => s.Resolution = v)),
             Row("Frame rate", FrameRateBox()),
             Row("Quality", Combo(Enum.GetValues<Quality>().Select(q => (q.Label(), q)), s.Quality, v => s.Quality = v)),
             bitrateRow,
-            Row("Codec", Combo(Enum.GetValues<VideoCodec>().Select(v => (v.Label(), v)), s.Codec, v => s.Codec = v)),
+            Row("Codec", Combo(codecs.Select(v => (v.Label(), v)), s.Codec, v => s.Codec = v)),
             Toggle("Show mouse cursor", s.ShowCursor, v => s.ShowCursor = v),
         }, videoFooter);
 
@@ -195,18 +224,84 @@ sealed class SettingsWindow : Window
                 catch (Exception e) { Toast.Error("Couldn't change the startup setting", e); }
             }),
             capturingRow,
-        }, Footer($"Rewind {typeof(SettingsWindow).Assembly.GetName().Version?.ToString(3)} · settings are kept in %APPDATA%\\Rewind"));
+        }, Footer("Settings are kept in %APPDATA%\\Rewind."));
+
+        BuildUpdatesSection();
+
+        var uninstall = new Button { Content = "Uninstall Rewind…", HorizontalAlignment = HorizontalAlignment.Left };
+        uninstall.SetResourceReference(ForegroundProperty, "SystemFillColorCriticalBrush");
+        uninstall.Click += (_, _) => Uninstaller.ConfirmAndRun(this);
+        Section("Uninstall", new[] { Pad(uninstall) },
+            Footer("Permanently deletes Rewind, its settings and logs, and its \"Open Rewind when Windows starts\" entry. Downloaded Rewind installers go to the Recycle Bin. Your clips are kept."));
 
         building = false;
+    }
+
+    /// Version, automatic checks and the Check for Updates button.
+    void BuildUpdatesSection()
+    {
+        var u = Updater.Shared;
+        var version = new TextBlock { Text = Updater.CurrentVersion };
+        version.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
+        var action = new Button { Content = "Check for Updates" };
+        var whatsNew = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0) };
+        var link = new Hyperlink(new Run("What's new"));
+        link.Click += (_, _) => { if (u.Offer?.PageUrl is { } page) Process.Start(new ProcessStartInfo(page.ToString()) { UseShellExecute = true }); };
+        whatsNew.Inlines.Add(link);
+        var status = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, MaxWidth = 260, TextAlignment = TextAlignment.Right };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal };
+        buttons.Children.Add(action);
+        buttons.Children.Add(whatsNew);
+        var row = new DockPanel { Margin = new Thickness(16, 10, 12, 10), LastChildFill = false };
+        DockPanel.SetDock(buttons, Dock.Left);
+        DockPanel.SetDock(status, Dock.Right);
+        row.Children.Add(buttons);
+        row.Children.Add(status);
+        action.Click += (_, _) =>
+        {
+            if (u.State == Updater.Phase.Available && u.Offer is { } r) u.Install(r);
+            else u.Check(userInitiated: true);
+        };
+
+        void Show()
+        {
+            var available = u.State == Updater.Phase.Available && u.Offer != null;
+            action.Content = available ? $"Install Rewind {u.Offer!.Version}" : "Check for Updates";
+            action.IsEnabled = u.State is not (Updater.Phase.Checking or Updater.Phase.Downloading or Updater.Phase.Installing);
+            if (available) action.SetResourceReference(StyleProperty, "AccentButtonStyle"); else action.ClearValue(StyleProperty);
+            whatsNew.Visibility = available && u.Offer!.PageUrl != null ? Visibility.Visible : Visibility.Collapsed;
+            status.Text = u.State switch
+            {
+                Updater.Phase.Checking => "Checking…",
+                Updater.Phase.UpToDate => "Rewind is up to date",
+                Updater.Phase.Available => $"Version {u.Offer?.Version} is available",
+                Updater.Phase.Downloading => "Downloading…",
+                Updater.Phase.Installing => "Installing…",
+                Updater.Phase.Failed => u.Message,
+                _ => "",
+            };
+            if (u.State == Updater.Phase.Failed) status.SetResourceReference(TextBlock.ForegroundProperty, "SystemFillColorCautionBrush");
+            else status.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
+        }
+        Action changed = () => Dispatcher.BeginInvoke(Show);
+        u.Changed += changed;
+        Closed += (_, _) => u.Changed -= changed;
+        Show();
+
+        Section("Updates", new[]
+        {
+            Row("Version", version),
+            Toggle("Check for updates when Rewind starts", s.CheckForUpdates, v => s.CheckForUpdates = v),
+            row,
+        }, Footer("Updates come from Rewind's GitHub releases. Each installer is checked against Rewind's signing certificate before it runs, then Rewind reopens by itself."));
     }
 
     void Refresh()
     {
         building = true;
         captureFooter.Text = s.CaptureAppId.Length == 0
-            ? "Records everything on the display."
-            : $"Records only {s.CaptureAppName}'s window and sound. While it isn't running, Rewind records the whole display and switches over when it opens.";
-        displayLabel.Text = s.CaptureAppId.Length == 0 ? "Display" : "Fallback display";
+            ? $"Records everything on {Displays.Connected(s.DisplayId)?.Short ?? "the display"}{(s.SystemAudio ? ", with all system audio" : "")}."
+            : $"Records only {s.CaptureAppName}'s window and sound. While it isn't running, Rewind records the fallback display below and switches over when it opens.";
 
         mixMic.IsEnabled = s.Microphone && s.SystemAudio;
         audioFooter.Text = !(s.Microphone && s.SystemAudio) ? "" : s.MixMicrophone
@@ -257,7 +352,8 @@ sealed class SettingsWindow : Window
 
     FrameworkElement BitrateBox()
     {
-        var box = new TextBox { Width = 56, TextAlignment = TextAlignment.Right, Text = s.CustomMbps.ToString() };
+        // Wide enough for "150" next to the ✕ Windows adds inside a focused text box.
+        var box = new TextBox { Width = 92, TextAlignment = TextAlignment.Right, MaxLength = 3, Text = s.CustomMbps.ToString() };
         void Commit()
         {
             if (int.TryParse(new string(box.Text.Where(char.IsDigit).ToArray()), out int v)) s.CustomMbps = v;
@@ -334,24 +430,44 @@ sealed class SettingsWindow : Window
                   "Changes apply the next time the overlay opens."));
     }
 
-    sealed record AppChoice(string Key, string Name);
+    /// A display (DisplayId set) or an app (Key set).
+    sealed record CaptureChoice(string Key, string Name, string? DisplayId);
 
     void FillApps()
     {
         bool was = building;
         building = true;
         appPicker.Items.Clear();
-        appPicker.Items.Add(new ComboBoxItem { Content = IconLabel(null, "Entire display"), Tag = new AppChoice("", "") });
+        foreach (var d in Displays.All())
+            appPicker.Items.Add(new ComboBoxItem { Content = IconLabel(null, d.Label), Tag = new CaptureChoice("", "", d.Id) });
+        var chosenDisplay = s.CaptureAppId.Length > 0 ? null : Displays.Connected(s.DisplayId)?.Id;
+        if (s.CaptureAppId.Length == 0 && chosenDisplay == null)
+        {
+            chosenDisplay = s.DisplayId;
+            appPicker.Items.Add(new ComboBoxItem { Content = IconLabel(null, "Disconnected display"), Tag = new CaptureChoice("", "", s.DisplayId) });
+        }
         appPicker.Items.Add(new Separator());
         var apps = AppTarget.Pickable();
         foreach (var a in apps)
-            appPicker.Items.Add(new ComboBoxItem { Content = IconLabel(a.ExePath, a.Name), Tag = new AppChoice(a.Key, a.Name) });
+            appPicker.Items.Add(new ComboBoxItem { Content = IconLabel(a.ExePath, a.Name), Tag = new CaptureChoice(a.Key, a.Name, null) });
         if (s.CaptureAppId.Length > 0 && apps.All(a => a.Key != s.CaptureAppId))
         {
             appPicker.Items.Add(new Separator());
-            appPicker.Items.Add(new ComboBoxItem { Content = IconLabel(null, $"{s.CaptureAppName} (not running)"), Tag = new AppChoice(s.CaptureAppId, s.CaptureAppName) });
+            appPicker.Items.Add(new ComboBoxItem { Content = IconLabel(null, $"{s.CaptureAppName} (not running)"), Tag = new CaptureChoice(s.CaptureAppId, s.CaptureAppName, null) });
         }
-        appPicker.SelectedItem = appPicker.Items.OfType<ComboBoxItem>().FirstOrDefault(i => ((AppChoice)i.Tag).Key == s.CaptureAppId);
+        appPicker.SelectedItem = appPicker.Items.OfType<ComboBoxItem>().FirstOrDefault(i => i.Tag is CaptureChoice c &&
+            (chosenDisplay != null ? c.DisplayId == chosenDisplay : c.DisplayId == null && c.Key == s.CaptureAppId));
+        building = was;
+    }
+
+    void FillFallback()
+    {
+        bool was = building;
+        building = true;
+        fallbackPicker.Items.Clear();
+        foreach (var d in Displays.All()) fallbackPicker.Items.Add(new ComboBoxItem { Content = d.Label, Tag = d.Id });
+        var current = Displays.Find(s.DisplayId)?.Id;
+        fallbackPicker.SelectedItem = fallbackPicker.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == current);
         building = was;
     }
 

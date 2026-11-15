@@ -14,7 +14,14 @@ sealed class CodecConfig
     public byte[]? Vps { get; set; }
     public byte[]? Sps { get; set; }
     public byte[]? Pps { get; set; }
-    public bool Ready => Sps != null && Pps != null && (Codec == VideoCodec.H264 || Vps != null);
+    /// AV1 only: the sequence header OBU.
+    public byte[]? SequenceHeader { get; set; }
+    public bool Ready => Codec switch
+    {
+        VideoCodec.Av1 => SequenceHeader != null,
+        VideoCodec.Hevc => Vps != null && Sps != null && Pps != null,
+        _ => Sps != null && Pps != null,
+    };
 }
 
 sealed record EncoderTuning(int RateControl = 1, double PeakFactor = 1.5, double BitrateFactor = 1.0,
@@ -24,9 +31,13 @@ sealed record EncoderTuning(int RateControl = 1, double PeakFactor = 1.5, double
 
     // Chosen with --quality-test: smaller files with PSNR, worst-frame PSNR and SSIM all at least as good as
     // Original on both game and desktop footage.
-    public static EncoderTuning For(VideoCodec codec) => codec == VideoCodec.Hevc
-        ? new(QualityVsSpeed: 100, KeyframeSeconds: 2, BitrateFactor: 0.90)
-        : new(QualityVsSpeed: 100, KeyframeSeconds: 2, BitrateFactor: 0.95);
+    public static EncoderTuning For(VideoCodec codec) => codec switch
+    {
+        VideoCodec.Hevc => new(QualityVsSpeed: 100, KeyframeSeconds: 2, BitrateFactor: 0.90),
+        // Not measured with --quality-test yet (no AV1 encoder to test on); same settings as HEVC without the trim.
+        VideoCodec.Av1 => new(QualityVsSpeed: 100, KeyframeSeconds: 2),
+        _ => new(QualityVsSpeed: 100, KeyframeSeconds: 2, BitrateFactor: 0.95),
+    };
 }
 
 sealed class EncodedFrame(long pts, bool isKey, byte[] data, CodecConfig config)
@@ -93,8 +104,10 @@ sealed class VideoEncoder : IDisposable
                 candidate.Dispose();
             }
         }
+        if (mft == null && codec == VideoCodec.Av1 && lastError == null)
+            throw new RewindException("This PC's graphics card can't record AV1. Choose H.264 or HEVC under Codec in Settings.");
         if (mft == null)
-            throw new RewindException($"Couldn't start a {codec.Short()} encoder at {width}×{height}" +
+            throw new RewindException($"Couldn't start the {codec.Short()} encoder at {width}×{height}" +
                                       (lastError != null ? $" ({lastError.Message})" : "") + ".");
         Name ??= "";
         Log.Info($"encoder: {Name} ({(IsHardware ? "hardware" : "software")}) {width}x{height}@{fps} {codec.Short()} {bitrate / 1_000_000} Mbps");
@@ -108,9 +121,41 @@ sealed class VideoEncoder : IDisposable
         }
     }
 
+    static readonly Guid Av1Format = new("31305641-0000-0010-8000-00aa00389b71"); // MFVideoFormat_AV1 ('AV01')
+
+    static Guid Subtype(VideoCodec codec) => codec switch
+    {
+        VideoCodec.Av1 => Av1Format,
+        VideoCodec.Hevc => VideoFormatGuids.Hevc,
+        _ => VideoFormatGuids.H264,
+    };
+
+    static readonly Dictionary<VideoCodec, bool> hardwareSupport = new();
+
+    /// Whether the graphics card has a hardware encoder for `codec` (AV1 needs an RTX 40, Radeon RX 7000, Intel Arc or newer).
+    public static bool HasHardwareEncoder(VideoCodec codec)
+    {
+        lock (hardwareSupport)
+        {
+            if (hardwareSupport.TryGetValue(codec, out bool known)) return known;
+            bool found = false;
+            try
+            {
+                var output = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = Subtype(codec) };
+                var input = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = VideoFormatGuids.NV12 };
+                using var list = MediaFactory.MFTEnumEx(TransformCategoryGuids.VideoEncoder,
+                    (uint)(EnumFlag.EnumFlagHardware | EnumFlag.EnumFlagSortandfilter), input, output);
+                found = list != null && list.ToList().Count > 0;
+            }
+            catch (Exception e) { Log.Error("MFTEnumEx", e); }
+            hardwareSupport[codec] = found;
+            return found;
+        }
+    }
+
     static IEnumerable<(IMFTransform, string, bool)> Candidates(VideoCodec codec)
     {
-        var output = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = codec == VideoCodec.H264 ? VideoFormatGuids.H264 : VideoFormatGuids.Hevc };
+        var output = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = Subtype(codec) };
         var input = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = VideoFormatGuids.NV12 };
         foreach (var hardware in new[] { true, false })
         {
@@ -173,13 +218,14 @@ sealed class VideoEncoder : IDisposable
         using (var outType = MediaFactory.MFCreateMediaType())
         {
             outType.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Video);
-            outType.Set(MediaTypeAttributeKeys.Subtype, codec == VideoCodec.H264 ? VideoFormatGuids.H264 : VideoFormatGuids.Hevc);
+            outType.Set(MediaTypeAttributeKeys.Subtype, Subtype(codec));
             outType.Set(MediaTypeAttributeKeys.AvgBitrate, (uint)bitrate);
             outType.Set(MediaTypeAttributeKeys.FrameSize, MF.Pack(w, h));
             outType.Set(MediaTypeAttributeKeys.FrameRate, MF.Pack(fps, 1));
             outType.Set(MediaTypeAttributeKeys.PixelAspectRatio, MF.Pack(1, 1));
             outType.Set(MediaTypeAttributeKeys.InterlaceMode, 2u);
-            outType.Set(MediaTypeAttributeKeys.Mpeg2Profile, codec == VideoCodec.H264 ? 100u /* High */ : 1u /* Main */);
+            // H.264 High; HEVC Main; AV1 Main 4:2:0 8-bit (eAVEncAV1VProfile_Main_420_8).
+            outType.Set(MediaTypeAttributeKeys.Mpeg2Profile, codec == VideoCodec.H264 ? 100u : 1u);
             SetBt709(outType);
             t.SetOutputType(0, outType, 0);
         }
@@ -382,7 +428,7 @@ sealed class VideoEncoder : IDisposable
             mb.Unlock();
         }
         long pts = sample.SampleTime;
-        var (data, isKey) = Nal.ToMp4(raw, config);
+        var (data, isKey) = config.Codec == VideoCodec.Av1 ? Av1.ToMp4(raw, config) : Nal.ToMp4(raw, config);
         if (!config.Ready) LoadSequenceHeader();
         if (!config.Ready || data.Length == 0) return;
         if (isKey) Volatile.Write(ref lastKeyPts, pts);
@@ -395,7 +441,11 @@ sealed class VideoEncoder : IDisposable
         {
             using var t = mft.GetOutputCurrentType(0);
             var blob = t.GetBlob(MediaTypeAttributeKeys.MpegSequenceHeader);
-            if (blob is { Length: > 0 }) Nal.ToMp4(blob, config);
+            if (blob is { Length: > 0 })
+            {
+                if (config.Codec == VideoCodec.Av1) Av1.ToMp4(blob, config);
+                else Nal.ToMp4(blob, config);
+            }
         }
         catch { }
     }

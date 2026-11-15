@@ -83,7 +83,7 @@ static class Theme
 }
 
 enum Sym { Replay, ReplayOff, Record, RecordFill, Stop, Camera, Folder, Gear, Close, Check, Error, Warning, Hourglass, Lock, Keyboard, Display, App, Mic,
-           Trash, Play, Pause, Back, Scissors, Eye, Gamepad, StepBack, StepForward, Film, MicOff,
+           Trash, Play, Pause, Back, Scissors, Eye, Gamepad, StepBack, StepForward, Film, MicOff, Download, Sync,
            // The rewind arrow with the replay length inside it ("30", "2m").
            ReplayLength }
 
@@ -115,6 +115,8 @@ static class Icons
         Sym.StepForward => "",
         Sym.Film => "",
         Sym.MicOff => "",
+        Sym.Download => "",
+        Sym.Sync => "",
         _ => null,
     };
 

@@ -189,8 +189,8 @@ sealed class CaptureEngine
             Log.Info(dup != null ? "capture: Desktop Duplication" : "capture: Windows.Graphics.Capture");
             // An app can go fullscreen or back to a window at any time.
             if (target.Window != IntPtr.Zero) watcher = new Timer(_ => Watch(), null, 250, 250);
-            Info = (AppName != null ? $"{AppName} · " : "") +
-                   $"{size.W}×{size.H} · {sig.Fps} fps · {sig.Codec.Short()} · {encoder.Bitrate / 1_000_000} Mbps" +
+            var source = AppName ?? Displays.All().FirstOrDefault(d => d.Handle == target.Monitor)?.Short ?? "Display";
+            Info = $"{source} · {size.W}×{size.H} · {sig.Fps} fps · {sig.Codec.Short()} · {encoder.Bitrate / 1_000_000} Mbps" +
                    (encoder.IsHardware ? "" : " · software");
         }
 

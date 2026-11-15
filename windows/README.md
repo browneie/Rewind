@@ -11,8 +11,10 @@ The Windows port of [Rewind](../README.md), the ShadowPlay-style screen recorder
 - **Instant Replay.** Keeps the last 15 seconds to 20 minutes ready to save with one hotkey. Clips are written without re-encoding, so saving is near-instant.
 - **Recording.** Start/stop a normal recording at any time; it runs alongside Instant Replay.
 - **Screenshots.** Full-resolution PNG of the display.
-- **Capture one app.** Choose an app (a game, say) in Settings, and only its window and sound are recorded, so notifications and other apps stay out of your clips. If the app isn't running, Rewind records the whole display and switches over automatically when the app opens. Clips of that app are named after it, like `Roblox 2026-11-13 at 16.53.58.mp4`. Games that run inside Java, Python or Electron are named from their window title, so Minecraft clips say Minecraft rather than Java.
-- **Hardware encoding.** Captures with Desktop Duplication or Windows.Graphics.Capture and encodes H.264 or HEVC on the GPU (NVIDIA NVENC, Intel Quick Sync or AMD AMF), so it's light on the CPU while you play.
+- **Pick a screen or an app.** In Settings → Capture, choose Display 1, Display 2 (and so on), or one app.
+- **Capture one app.** Choose an app (a game, say), and only its window and sound are recorded, so notifications and other apps stay out of your clips. If the app isn't running, Rewind records the fallback display and switches over automatically when the app opens. Clips of that app are named after it, like `Roblox 2026-11-13 at 16.53.58.mp4`. Games that run inside Java, Python or Electron are named from their window title, so Minecraft clips say Minecraft rather than Java.
+- **Hardware encoding.** Captures with Desktop Duplication or Windows.Graphics.Capture and encodes H.264, HEVC or AV1 on the GPU (NVIDIA NVENC, Intel Quick Sync or AMD AMF), so it's light on the CPU while you play. AV1 is offered only on graphics cards that can encode it (NVIDIA RTX 40 series, AMD Radeon RX 7000, Intel Arc and newer).
+- **Automatic updates.** Rewind checks GitHub for a newer version when it starts and offers it in a notification (Settings → Updates has a Check for Updates button too). The installer is downloaded, checked against Rewind's signing certificate and run, and Rewind reopens by itself. Only copies installed with the installer can update themselves.
 - **Audio.** System audio and/or microphone. By default your mic is mixed into the main track so clips play correctly everywhere; turn that off to keep them as separate tracks for editing.
 - **Auto-cleanup** (optional, off by default). Moves clips and screenshots older than a set number of days (14 by default) to the Recycle Bin. Only Rewind's own files are touched.
 - **Preview and trim clips in the overlay.** Your newest clip is loaded in the overlay's player as soon as it opens, with the latest clips and screenshots as thumbnails under it. Click one to play it right in the overlay (Space plays or pauses, ← → step a frame), trim it, show it in Explorer, or move it to the Recycle Bin. Clicking a "saved" notification opens the clip there too. Trimming saves a new file next to the original (`… (trimmed).mp4`) without re-encoding, so it's instant and loses no quality.
@@ -46,10 +48,10 @@ Rewind lives in the notification area (system tray). Click its icon for the menu
 
 Download from [Releases](../../../releases), either:
 
-- **Installer:** `Rewind-<version>-Windows-x64-Setup.exe` (or `-arm64-Setup.exe` for ARM PCs). It installs for your user only, so no admin prompt, and adds Rewind to the Start menu. Remove it from Settings → Apps; your settings and clips are kept. Running a newer installer upgrades in place, quitting Rewind first (a recording in progress is saved).
+- **Installer:** `Rewind-<version>-Windows-x64-Setup.exe` (or `-arm64-Setup.exe` for ARM PCs). It installs for your user only, so no admin prompt, and adds Rewind to the Start menu. Remove it from Settings → Apps (your settings and clips are kept), or with **Uninstall Rewind…** in Rewind's own Settings (see below). Running a newer installer upgrades in place, quitting Rewind first (a recording in progress is saved).
 - **Portable:** `Rewind-<version>-Windows-x64.zip` (or `-arm64`). Unzip it anywhere and run **Rewind.exe**.
 
-Neither is code-signed, so the first time Windows SmartScreen may say it protected your PC: click **More info → Run anyway**.
+Both are signed with Rewind's own certificate, which Windows doesn't recognize, so the first time Windows SmartScreen may say it protected your PC: click **More info → Run anyway**. Updates installed from inside Rewind don't ask again.
 
 No permissions are needed for screen capture. To record your microphone, desktop apps must be allowed to use it (Settings → Privacy & security → Microphone); Rewind tells you if they aren't.
 
@@ -57,11 +59,27 @@ Requires Windows 10 version 2004 (build 19041) or later, or Windows 11, on x64 o
 
 Clips are saved to `Videos\Rewind` by default.
 
+### Uninstall
+
+Settings → **Uninstall Rewind…** (at the very bottom) removes everything Rewind put on your PC except your clips. It shows you the list first, and once you confirm it does this by itself:
+
+| Trace | What happens to it |
+|---|---|
+| Rewind (installed copy) | Removed by Setup's uninstaller, with its Start menu shortcut |
+| Rewind.exe (the portable copy you're running) | Deleted |
+| Downloaded installers and zips in Downloads or on the Desktop (`Rewind-<version>-Windows-…`) | Moved to the Recycle Bin |
+| Settings (`%APPDATA%\Rewind`) and log (`%LOCALAPPDATA%\Rewind`) | Deleted |
+| Leftover update downloads in the temporary folder | Deleted |
+| "Open Rewind when Windows starts" | Removed |
+| **Your clips** (`Videos\Rewind` or the folder you chose) | **Kept** |
+
+A recording in progress is saved first. Other portable copies of Rewind elsewhere on the PC aren't searched for.
+
 ## Settings
 
 <img src="docs/settings.png" width="420" alt="Settings window">
 
-Choose what to capture (the whole display or one app), the display, resolution, frame rate (pick one or type any from 1 to 360 fps), quality (or a custom bitrate from 1 to 150 Mbps), codec, replay length, audio sources and whether to mix the mic in, save folder, auto-cleanup of old clips, the overlay's layout, accent color, dimming, player size and hotkey hints, hotkeys, whether screen shares can see the overlay and Settings, and whether Rewind opens when Windows starts. The Settings window shows how much RAM the replay buffer will use.
+Choose what to capture (any connected display, or one app), resolution, frame rate (pick one or type any from 1 to 360 fps), quality (or a custom bitrate from 1 to 150 Mbps), codec, replay length, audio sources and whether to mix the mic in, save folder, auto-cleanup of old clips, the overlay's layout, accent color, dimming, player size and hotkey hints, hotkeys, whether screen shares can see the overlay and Settings, whether Rewind opens when Windows starts, and whether it checks for updates. The Settings window shows how much RAM the replay buffer will use.
 
 While the overlay is open over a whole-display capture that screen shares can see, Rewind's own video holds its last frame (sound keeps recording), so the overlay stays out of your clips. Notifications are always hidden from every capture.
 
@@ -74,10 +92,12 @@ Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download). Nothing else:
 ```powershell
 .\build.ps1              # builds build\Rewind.exe for this PC (needs the .NET 10 Desktop Runtime)
 .\build.ps1 -SelfTest    # ...and runs the pipeline self-test
-.\release.ps1 1.3.0      # self-contained single-file x64 + ARM64 zips and installers in dist\
+.\release.ps1 1.6.0      # signed, self-contained single-file x64 + ARM64 zips and installers in dist\
 ```
 
 Or simply `dotnet run` from this folder. The installers need [Inno Setup](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`); their script is [`installer/Rewind.iss`](installer/Rewind.iss). Without it, `release.ps1` builds only the zips.
+
+`release.ps1` signs Rewind.exe and the installers with a "Rewind Release" code-signing certificate from your certificate store, and the in-app updater only installs an installer signed with the same certificate as the copy that's running. Make the certificate once with `.\scripts\new-signing-cert.ps1` on the PC you build releases on, and back it up (the script shows how): a release signed with a different certificate can't update existing copies. Attach the `-Setup.exe` files to the GitHub release next to the macOS .dmg; the updater looks for `Rewind-<version>-Windows-<x64|arm64>-Setup.exe` in the latest release. `-Unsigned` builds without signing.
 
 To check the capture → encode → replay → MP4 pipeline without recording the screen (it drives the GPU colour converter and hardware encoder with synthetic frames and audio, writes clips and recordings, then decodes them and measures A/V sync):
 
@@ -121,13 +141,15 @@ The files mirror `Sources/Rewind/` one to one, so a change on one side is easy t
 | ScreenCaptureKit | Desktop Duplication for displays and fullscreen apps (with the mouse pointer drawn in by Rewind), Windows.Graphics.Capture for app windows, `SetWindowDisplayAffinity` to hide Rewind's own windows | `CaptureEngine.cs`, `Duplication.cs`, `Gpu.cs` |
 | VideoToolbox (Apple media engine) | Media Foundation hardware encoder MFT, fed NV12 surfaces converted on the GPU by the D3D11 video processor | `VideoEncoder.cs`, `Gpu.cs` |
 | ScreenCaptureKit audio | WASAPI loopback, microphone, and per-process loopback for "capture one app" | `AudioCapture.cs` |
-| AVAssetWriter | A small built-in MP4 muxer (H.264/HEVC passed through, AAC from Media Foundation's encoder) | `Mp4Muxer.cs`, `Writers.cs` |
+| AVAssetWriter | A small built-in MP4 muxer (H.264/HEVC/AV1 passed through, AAC from Media Foundation's encoder) | `Mp4Muxer.cs`, `Writers.cs` |
 | AVAssetReaderAudioMixOutput mixdown | The mic is mixed in while writing, so there's no second pass | `AudioMixdown.cs` |
 | Carbon `RegisterEventHotKey` | `RegisterHotKey` | `Hotkeys.cs` |
 | Menu bar item | Notification-area icon | `App.cs` |
 | SwiftUI overlay, toasts, settings, color wheel | WPF (settings use the Windows 11 Fluent theme) | `Overlay.cs`, `Toast.cs`, `SettingsWindow.cs`, `ColorWheel.cs` |
 | `UserDefaults`, `SMAppService` | JSON file, `HKCU\…\Run` | `Settings.cs`, `SettingsWindow.cs` |
 | Replay buffer, controller, auto-cleanup | Same logic, ported line for line | `ReplayBuffer.cs`, `Controller.cs`, `Cleanup.cs` |
+| `Updater` (.dmg, code signature check) | `Updater` (Inno Setup installer, Authenticode signer check) | `Updater.cs` |
+| `Uninstaller` | `Uninstaller` (Setup's uninstaller plus a cleanup helper) | `Uninstaller.cs` |
 | AVPlayer preview, AVAssetExportSession passthrough trim, QuickLook thumbnails | Media Foundation's Media Engine drawing into a WPF bitmap, a passthrough trimmer on the built-in MP4 reader and muxer, Explorer's thumbnails | `Clips.cs`, `ClipPlayer.cs`, `Mp4Reader.cs` |
 
 ## Known limitations

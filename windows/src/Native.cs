@@ -35,6 +35,62 @@ static class Native
     public delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdc, ref RECT rect, IntPtr data);
     public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct DisplayConfigPath
+    {
+        public long SourceAdapter; public uint SourceId, SourceMode, SourceStatus;
+        public long TargetAdapter; public uint TargetId, TargetMode;
+        public int Technology, Rotation, Scaling; public uint RefreshNum, RefreshDen; public int ScanLine, Available; public uint TargetStatus;
+        public uint Flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential, Size = 64)]
+    struct DisplayConfigMode { public uint Type, Id; }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct DisplayConfigSourceName
+    {
+        public int Type, Size; public long Adapter; public uint Id;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string GdiName;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct DisplayConfigTargetName
+    {
+        public int Type, Size; public long Adapter; public uint Id;
+        public uint Flags; public int Technology; public ushort Manufacturer, Product; public uint Connector;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string FriendlyName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DevicePath;
+    }
+
+    [DllImport("user32.dll")] static extern int GetDisplayConfigBufferSizes(uint flags, out uint paths, out uint modes);
+    [DllImport("user32.dll")] static extern int QueryDisplayConfig(uint flags, ref uint numPaths, [Out] DisplayConfigPath[] paths, ref uint numModes, [Out] DisplayConfigMode[] modes, IntPtr topology);
+    [DllImport("user32.dll")] static extern int DisplayConfigGetDeviceInfo(ref DisplayConfigSourceName info);
+    [DllImport("user32.dll")] static extern int DisplayConfigGetDeviceInfo(ref DisplayConfigTargetName info);
+
+    /// Monitor model names ("DELL U2720Q") by GDI device name ("\\.\DISPLAY1"), as Windows Settings shows them.
+    public static Dictionary<string, string> MonitorNames()
+    {
+        var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            const uint OnlyActive = 2;
+            if (GetDisplayConfigBufferSizes(OnlyActive, out uint np, out uint nm) != 0) return names;
+            var paths = new DisplayConfigPath[np];
+            var modes = new DisplayConfigMode[nm];
+            if (QueryDisplayConfig(OnlyActive, ref np, paths, ref nm, modes, IntPtr.Zero) != 0) return names;
+            foreach (var p in paths.Take((int)np))
+            {
+                var src = new DisplayConfigSourceName { Type = 1, Size = Marshal.SizeOf<DisplayConfigSourceName>(), Adapter = p.SourceAdapter, Id = p.SourceId };
+                var dst = new DisplayConfigTargetName { Type = 2, Size = Marshal.SizeOf<DisplayConfigTargetName>(), Adapter = p.TargetAdapter, Id = p.TargetId };
+                if (DisplayConfigGetDeviceInfo(ref src) == 0 && DisplayConfigGetDeviceInfo(ref dst) == 0 && !string.IsNullOrWhiteSpace(dst.FriendlyName))
+                    names.TryAdd(src.GdiName, dst.FriendlyName.Trim());
+            }
+        }
+        catch (Exception e) { Log.Error("monitor names", e); }
+        return names;
+    }
+
     [DllImport("user32.dll")] public static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorEnumProc proc, IntPtr data);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFOEX info);
     [DllImport("user32.dll")] public static extern IntPtr MonitorFromPoint(POINT pt, uint flags);

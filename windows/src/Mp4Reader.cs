@@ -16,7 +16,7 @@ sealed class Mp4Reader
         public long EditMediaTime;
         public double DelaySeconds;
         public VideoCodec Codec;
-        public byte[]? Vps, Sps, Pps, AudioConfig;
+        public byte[]? Vps, Sps, Pps, SequenceHeader, AudioConfig;
         public int SampleRate, Channels;
         public readonly List<long> Dts = new(), Offsets = new();
         public readonly List<int> Sizes = new();
@@ -179,12 +179,13 @@ sealed class Mp4Reader
     {
         foreach (var (type, s, e) in Boxes(b, start, end))
         {
-            if (type is "avc1" or "avc3" or "hvc1" or "hev1")
+            if (type is "avc1" or "avc3" or "hvc1" or "hev1" or "av01")
             {
-                t.Codec = type.StartsWith("avc") ? VideoCodec.H264 : VideoCodec.Hevc;
+                t.Codec = type == "av01" ? VideoCodec.Av1 : type.StartsWith("avc") ? VideoCodec.H264 : VideoCodec.Hevc;
                 foreach (var (ct, cs, ce) in Boxes(b, s + 78, e))
                 {
-                    if (ct == "avcC")
+                    if (ct == "av1C") t.SequenceHeader ??= Av1.FromConfigRecord(b.AsSpan(cs, ce - cs));
+                    else if (ct == "avcC")
                     {
                         int p = cs + 5, nSps = b[p++] & 0x1F;
                         for (int i = 0; i < nSps; i++) { int len = U16(b, p); t.Sps ??= b[(p + 2)..(p + 2 + len)]; p += 2 + len; }

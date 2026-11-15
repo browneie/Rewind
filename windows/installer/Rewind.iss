@@ -62,10 +62,17 @@ Name: "{autodesktop}\Rewind"; Filename: "{app}\Rewind.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\Rewind.exe"; Description: "{cm:LaunchProgram,Rewind}"; Flags: nowait postinstall skipifsilent
+; Rewind's updater runs Setup silently with /RELAUNCH=1 to get the new version opened afterwards.
+Filename: "{app}\Rewind.exe"; Flags: nowait runasoriginaluser; Check: Relaunch
 
 [Code]
 const
   RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+
+function Relaunch(): Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
 
 function RunningFrom(const Exe: String): Boolean;
 var

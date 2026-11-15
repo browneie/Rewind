@@ -219,7 +219,9 @@ static class ClipTrimmer
     {
         var r = Mp4Reader.Open(source);
         var v = r.Video ?? throw new RewindException("This clip has no video.");
-        if (v.Sps == null || v.Pps == null || (v.Codec == VideoCodec.Hevc && v.Vps == null) || v.Count == 0)
+        int fps = (int)Math.Clamp(Math.Round((v.Count - 1) / Math.Max(v.MediaDuration, 0.001)), 1, 360);
+        var cfg = new CodecConfig { Codec = v.Codec, Width = v.Width, Height = v.Height, Fps = fps, Vps = v.Vps, Sps = v.Sps, Pps = v.Pps, SequenceHeader = v.SequenceHeader };
+        if (!cfg.Ready || v.Count == 0)
             throw new RewindException("This clip's video can't be read.");
         if (end <= start) throw new RewindException("Choose a part to keep first.");
 
@@ -232,8 +234,6 @@ static class ClipTrimmer
         while (e < v.Count && v.Presented(e) < end - 1e-4) e++;
         double t0 = v.Presented(k), shownFrom = v.Presented(f);
 
-        int fps = (int)Math.Clamp(Math.Round((v.Count - 1) / Math.Max(v.MediaDuration, 0.001)), 1, 360);
-        var cfg = new CodecConfig { Codec = v.Codec, Width = v.Width, Height = v.Height, Fps = fps, Vps = v.Vps, Sps = v.Sps, Pps = v.Pps };
         using var src = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         byte[] Read(long off, int size)
         {

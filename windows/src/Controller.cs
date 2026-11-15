@@ -26,6 +26,8 @@ sealed class Controller
     bool appWasRunning;
     int retargetAttempts;
     Task? finishing;
+    /// Replays and recordings still being written (quitting and uninstalling wait for these).
+    public int SavesInFlight { get; private set; }
 
     Controller()
     {
@@ -139,6 +141,7 @@ sealed class Controller
             return;
         }
         if (MakeOutputPath(NamePrefix("Replay"), "mp4") is not { } path) return;
+        SavesInFlight++;
         try
         {
             double length = await ClipWriter.WriteAsync(snap, path);
@@ -151,6 +154,7 @@ sealed class Controller
             Log.Error("save replay", e);
             Toast.Error("Couldn't save replay", e);
         }
+        finally { SavesInFlight--; }
     }
 
     public void StartRecording()
@@ -185,8 +189,9 @@ sealed class Controller
         Reconcile();
         return finishing;
 
-        static async Task Finish(LiveRecorder rec)
+        async Task Finish(LiveRecorder rec)
         {
+            SavesInFlight++;
             try
             {
                 double length = await rec.FinishAsync();
@@ -199,6 +204,7 @@ sealed class Controller
                 Log.Error("recording", e);
                 Toast.Error("Recording failed", e);
             }
+            finally { SavesInFlight--; }
         }
     }
 
@@ -442,6 +448,7 @@ sealed class Controller
     {
         if (Recording) await Task.WhenAny(StopRecording(), Task.Delay(8000));
         else if (finishing != null) await Task.WhenAny(finishing, Task.Delay(8000));
+        for (int i = 0; SavesInFlight > 0 && i < 100; i++) await Task.Delay(100);
         Router.BufferReplay = false;
         ReplayActive = false;
         try { await Task.WhenAny(engine.StopAsync(), Task.Delay(3000)); } catch { }

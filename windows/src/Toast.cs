@@ -12,20 +12,64 @@ namespace Rewind;
 static class Toast
 {
     static ToastWindow? current;
+    // While held (the launch update check) or while a pinned notice is up (the update offer), other notices
+    // wait; the most recent one shows once the way is clear.
+    static bool held, pinnedUp;
+    static Action? waiting;
 
     public static void Error(string title, Exception error) =>
         Show(title, error.Message, Sym.Error, Theme.Red, duration: 6);
 
-    public static void Show(string title, string? subtitle, Sym icon, Color tint, double duration = 3.5, Action? onClick = null)
+    /// Keeps other notices back until Release() or `seconds` pass, whichever comes first.
+    public static void Hold(double seconds)
+    {
+        held = true;
+        var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(seconds) };
+        t.Tick += (_, _) => { t.Stop(); Release(); };
+        t.Start();
+    }
+
+    public static void Release()
+    {
+        var d = System.Windows.Application.Current?.Dispatcher;
+        if (d != null && !d.CheckAccess()) { d.BeginInvoke(Release); return; }
+        if (!held) return;
+        held = false;
+        ShowWaiting();
+    }
+
+    static void ShowWaiting()
+    {
+        if (held || pinnedUp || waiting is not { } next) return;
+        waiting = null;
+        next();
+    }
+
+    /// `closable` adds an ✕ that dismisses the notice without running `onClick`.
+    /// `pinned` notices can't be replaced: others wait until it's clicked, closed or times out.
+    public static void Show(string title, string? subtitle, Sym icon, Color tint, double duration = 3.5, Action? onClick = null,
+                            bool closable = false, bool pinned = false)
     {
         var d = System.Windows.Application.Current?.Dispatcher;
         if (d == null) return;
-        if (!d.CheckAccess()) { d.BeginInvoke(() => Show(title, subtitle, icon, tint, duration, onClick)); return; }
+        if (!d.CheckAccess()) { d.BeginInvoke(() => Show(title, subtitle, icon, tint, duration, onClick, closable, pinned)); return; }
 
-        current?.Dismiss(fast: true);
-        var w = new ToastWindow(title, subtitle, icon, tint, onClick);
+        if (!pinned && (held || pinnedUp))
+        {
+            waiting = () => Show(title, subtitle, icon, tint, duration, onClick, closable);
+            return;
+        }
+        var old = current;
+        current = null;
+        if (old != null) { old.Replaced = true; old.Dismiss(fast: true); }
+        pinnedUp = pinned;
+        var w = new ToastWindow(title, subtitle, icon, tint, onClick, closable) { Pinned = pinned };
         current = w;
-        w.Closed += (_, _) => { if (current == w) current = null; };
+        w.Closed += (_, _) =>
+        {
+            if (current == w) current = null;
+            if (w.Pinned && !w.Replaced) { pinnedUp = false; ShowWaiting(); }
+        };
         w.ShowFor(duration);
     }
 
@@ -34,8 +78,9 @@ static class Toast
         readonly Action? onClick;
         readonly DispatcherTimer timer = new();
         bool dismissing;
+        public bool Pinned, Replaced;
 
-        public ToastWindow(string title, string? subtitle, Sym icon, Color tint, Action? onClick)
+        public ToastWindow(string title, string? subtitle, Sym icon, Color tint, Action? onClick, bool closable)
         {
             this.onClick = onClick;
             WindowStyle = WindowStyle.None;
@@ -49,7 +94,7 @@ static class Toast
             Opacity = 0;
             Left = -10000; Top = -10000;
 
-            var content = BuildCard(title, subtitle, icon, tint, onClick != null);
+            var content = BuildCard(title, subtitle, icon, tint, onClick != null, closable ? () => Dismiss(fast: false) : null);
             Content = content;
             content.MouseLeftButtonUp += (_, _) => { this.onClick?.Invoke(); Dismiss(fast: false); };
 
@@ -96,7 +141,7 @@ static class Toast
         }
     }
 
-    public static FrameworkElement BuildCard(string title, string? subtitle, Sym icon, Color tint, bool clickable)
+    public static FrameworkElement BuildCard(string title, string? subtitle, Sym icon, Color tint, bool clickable, Action? close = null)
     {
         {
             var iconBox = new Border
@@ -118,7 +163,24 @@ static class Toast
             var row = new DockPanel { LastChildFill = true };
             DockPanel.SetDock(iconBox, Dock.Left);
             row.Children.Add(iconBox);
-            if (clickable)
+            if (close != null)
+            {
+                var x = new Border
+                {
+                    Width = Theme.S(22), Height = Theme.S(22), CornerRadius = new CornerRadius(Theme.S(11)),
+                    Background = Theme.Brush(Colors.White, 0.1), VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(Theme.S(8), 0, 0, 0), Cursor = Cursors.Hand, ToolTip = "Not now",
+                    Child = new TextBlock
+                    {
+                        Text = "", FontFamily = Theme.Symbols, FontSize = Theme.S(9), FontWeight = FontWeights.Bold,
+                        Foreground = Theme.Brush(Colors.White, 0.8), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+                    },
+                };
+                x.MouseLeftButtonUp += (_, e) => { e.Handled = true; close(); };
+                DockPanel.SetDock(x, Dock.Right);
+                row.Children.Add(x);
+            }
+            else if (clickable)
             {
                 var chevron = new TextBlock
                 {

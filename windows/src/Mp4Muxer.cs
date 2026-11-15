@@ -260,17 +260,24 @@ sealed class Mp4Muxer : IDisposable
 
     static void VideoEntry(Box b, CodecConfig c)
     {
-        bool hevc = c.Codec == VideoCodec.Hevc;
-        b.Begin(hevc ? "hvc1" : "avc1").Zeros(6).U16(1)
+        var (entry, coding) = c.Codec switch
+        {
+            VideoCodec.Hevc => ("hvc1", "HEVC Coding"),
+            VideoCodec.Av1 => ("av01", "AOM Coding"),
+            _ => ("avc1", "AVC Coding"),
+        };
+        b.Begin(entry).Zeros(6).U16(1)
             .U16(0).U16(0).Zeros(12)
             .U16((ushort)c.Width).U16((ushort)c.Height)
             .U32(0x00480000).U32(0x00480000).U32(0).U16(1);
         var name = new byte[32];
-        var label = Encoding.ASCII.GetBytes(hevc ? "HEVC Coding" : "AVC Coding");
+        var label = Encoding.ASCII.GetBytes(coding);
         name[0] = (byte)label.Length;
         label.CopyTo(name, 1);
         b.Bytes(name).U16(0x0018).U16(0xFFFF);
-        if (hevc) Hvcc(b, c); else Avcc(b, c);
+        if (c.Codec == VideoCodec.Hevc) Hvcc(b, c);
+        else if (c.Codec == VideoCodec.Av1) b.Begin("av1C").Bytes(Av1.ConfigRecord(c.SequenceHeader!)).End();
+        else Avcc(b, c);
         b.Begin("colr").Fourcc("nclx").U16(1).U16(1).U16(1).U8(0).End();
         b.Begin("pasp").U32(1).U32(1).End();
         b.End();

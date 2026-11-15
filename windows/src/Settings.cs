@@ -13,7 +13,7 @@ sealed class RewindException(string message, int hresult = 0) : Exception(messag
     public int Code { get; } = hresult;
 }
 
-enum VideoCodec { H264, Hevc }
+enum VideoCodec { H264, Hevc, Av1 }
 
 enum Quality { Medium, High, VeryHigh, Ultra, Custom }
 
@@ -26,8 +26,13 @@ enum AudioTrack { System = 0, Mic = 1 }
 
 static class Labels
 {
-    public static string Label(this VideoCodec c) => c == VideoCodec.H264 ? "H.264 (most compatible)" : "HEVC / H.265 (smaller files)";
-    public static string Short(this VideoCodec c) => c == VideoCodec.H264 ? "H.264" : "HEVC";
+    public static string Label(this VideoCodec c) => c switch
+    {
+        VideoCodec.H264 => "H.264 (most compatible)",
+        VideoCodec.Hevc => "HEVC / H.265 (smaller files)",
+        _ => "AV1 (smallest files)",
+    };
+    public static string Short(this VideoCodec c) => c switch { VideoCodec.H264 => "H.264", VideoCodec.Hevc => "HEVC", _ => "AV1" };
 
     public static string Label(this Quality q) => q switch
     {
@@ -81,7 +86,7 @@ static class CaptureMath
             double s = (int)resolution / h;
             w *= s; h *= s;
         }
-        // Hardware H.264 encoders (NVENC, Quick Sync, AMF) top out at 4096 px; HEVC goes to 8K.
+        // Hardware H.264 encoders (NVENC, Quick Sync, AMF) top out at 4096 px; HEVC and AV1 go to 8K.
         double maxDim = codec == VideoCodec.H264 ? 4096 : 8192;
         if (Math.Max(w, h) > maxDim)
         {
@@ -98,6 +103,7 @@ static class CaptureMath
         if (quality == Quality.Custom) return Math.Clamp(customMbps, MinMbps, MaxMbps) * 1_000_000;
         double bps = (double)size.W * size.H * fps * quality.BitsPerPixel();
         if (codec == VideoCodec.Hevc) bps *= 0.7;
+        else if (codec == VideoCodec.Av1) bps *= 0.6;
         return (int)Math.Min(Math.Max(bps, 2_000_000), 150_000_000);
     }
 
@@ -231,6 +237,7 @@ sealed class Settings : INotifyPropertyChanged
         public bool ShowHotkeys { get; set; } = true;
         public double PlayerSize { get; set; } = Theme.DefaultPlayerSize;
         public int CustomMbps { get; set; } = 20;
+        public bool CheckForUpdates { get; set; } = true;
     }
 
     static readonly JsonSerializerOptions Json = new()
@@ -322,6 +329,8 @@ sealed class Settings : INotifyPropertyChanged
     public double PlayerSize { get => d.PlayerSize; set => Set(d.PlayerSize, Math.Clamp(value, Theme.MinPlayerSize, Theme.MaxPlayerSize), v => d.PlayerSize = v); }
     /// Bitrate in Mbps when Quality is "Custom bitrate".
     public int CustomMbps { get => d.CustomMbps; set => Set(d.CustomMbps, Math.Clamp(value, CaptureMath.MinMbps, CaptureMath.MaxMbps), v => d.CustomMbps = v); }
+    /// Check GitHub for a newer version when Rewind starts.
+    public bool CheckForUpdates { get => d.CheckForUpdates; set => Set(d.CheckForUpdates, value, v => d.CheckForUpdates = v); }
     /// App names used to name clips ("Roblox"), so cleanup and Recent clips still recognise those files.
     public IReadOnlyList<string> AppPrefixes => d.AppPrefixes;
 
@@ -383,9 +392,11 @@ sealed class Settings : INotifyPropertyChanged
 }
 
 
-sealed record DisplayInfo(string Id, int Number, IntPtr Handle, Native.RECT Bounds, Native.RECT Work, bool Primary)
+/// A connected screen, numbered the way Windows Settings → Display does.
+sealed record DisplayInfo(string Id, int Number, IntPtr Handle, Native.RECT Bounds, Native.RECT Work, bool Primary, string Model)
 {
-    public string Name => $"Display {Number}{(Primary ? " (primary)" : "")} ({Bounds.Width}×{Bounds.Height})";
+    public string Short => $"Display {Number}";
+    public string Label => $"Display {Number} · {(Model.Length > 0 ? Model : Primary ? "Main display" : "Monitor")} ({Bounds.Width}×{Bounds.Height})";
 }
 
 static class Displays
@@ -393,6 +404,7 @@ static class Displays
     public static List<DisplayInfo> All()
     {
         var list = new List<DisplayInfo>();
+        Dictionary<string, string>? models = null;
         Native.EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr h, IntPtr _, ref Native.RECT _, IntPtr _) =>
         {
             var mi = new Native.MONITORINFOEX { cbSize = Marshal.SizeOf<Native.MONITORINFOEX>() };
@@ -400,12 +412,17 @@ static class Displays
             {
                 var digits = new string(mi.szDevice.Where(char.IsDigit).ToArray());
                 int n = int.TryParse(digits, out var v) ? v : list.Count + 1;
-                list.Add(new DisplayInfo(mi.szDevice, n, h, mi.rcMonitor, mi.rcWork, (mi.dwFlags & Native.MONITORINFOF_PRIMARY) != 0));
+                models ??= Native.MonitorNames();
+                list.Add(new DisplayInfo(mi.szDevice, n, h, mi.rcMonitor, mi.rcWork, (mi.dwFlags & Native.MONITORINFOF_PRIMARY) != 0,
+                    models.GetValueOrDefault(mi.szDevice, "")));
             }
             return true;
         }, IntPtr.Zero);
         return list.OrderBy(x => x.Number).ToList();
     }
+
+    /// The display a saved choice points at, or null when it's disconnected ("" is always the main display).
+    public static DisplayInfo? Connected(string id) => id.Length == 0 ? Find(id) : All().FirstOrDefault(x => x.Id == id);
 
     public static DisplayInfo? Find(string id)
     {

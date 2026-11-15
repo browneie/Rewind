@@ -84,6 +84,13 @@ sealed class Tray : IDisposable
 
         _ = CaptureEngine.RequestBorderlessAsync();
         c.StartCleanupSchedule();
+        Updater.CleanUpOldDownloads();
+        if (s.CheckForUpdates)
+        {
+            // The update notice goes first: other launch notices wait for the check (8 s at most).
+            Toast.Hold(8);
+            Updater.Shared.Check(userInitiated: false);
+        }
 
         var ui = Dispatcher.CurrentDispatcher;
         if (args.Contains("--demo-toast"))
