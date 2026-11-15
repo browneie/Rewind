@@ -141,7 +141,16 @@ static class Toast
         }
     }
 
+    /// Notifications are always dark, even while a light overlay is open.
     public static FrameworkElement BuildCard(string title, string? subtitle, Sym icon, Color tint, bool clickable, Action? close = null)
+    {
+        bool light = Theme.Light;
+        Theme.Light = false;
+        try { return BuildDarkCard(title, subtitle, icon, tint, clickable, close); }
+        finally { Theme.Light = light; }
+    }
+
+    static FrameworkElement BuildDarkCard(string title, string? subtitle, Sym icon, Color tint, bool clickable, Action? close)
     {
         {
             var iconBox = new Border

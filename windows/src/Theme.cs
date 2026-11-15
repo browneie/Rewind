@@ -52,9 +52,42 @@ static class Theme
     public static readonly Color Blue = Hex(0x0A84FF);
     public static readonly Color Gray = Hex(0x98989D);
 
-    public static readonly Color PanelBase = Color.FromRgb(18, 18, 22);
-    public static readonly Brush Line = Frozen(new SolidColorBrush(Color.FromArgb(23, 255, 255, 255)));
-    public static readonly Brush Muted = Frozen(new SolidColorBrush(Color.FromArgb(148, 255, 255, 255)));
+    /// The overlay is drawn light (Settings → Overlay → Appearance, or Windows' own light/dark when set to
+    /// Match Windows). Set by the overlay while it's open; notifications always stay dark.
+    public static bool Light { get; set; }
+
+    /// Resolves Settings → Overlay → Appearance to light or dark.
+    public static bool WantsLight() => Settings.Shared.OverlayAppearance switch
+    {
+        OverlayAppearance.Light => true,
+        OverlayAppearance.Dark => false,
+        _ => AppsUseLightTheme(),
+    };
+
+    public static bool AppsUseLightTheme()
+    {
+        try
+        {
+            using var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return k?.GetValue("AppsUseLightTheme") is int v && v != 0;
+        }
+        catch { return false; }
+    }
+
+    static readonly Color LightPanel = Hex(0xF3F1EC), LightInk = Hex(0x1B1B19);
+    static readonly Brush DarkLine = Frozen(new SolidColorBrush(Color.FromArgb(23, 255, 255, 255))), LightLine = Frozen(new SolidColorBrush(Color.FromArgb(34, 0, 0, 0)));
+    static readonly Brush DarkMuted = Frozen(new SolidColorBrush(Color.FromArgb(148, 255, 255, 255))), LightMuted = Frozen(new SolidColorBrush(Hex(0x6B6A64)));
+
+    public static Color PanelBase => Light ? LightPanel : Color.FromRgb(18, 18, 22);
+    /// Text and icons on the overlay's panels.
+    public static Color Ink => Light ? LightInk : Colors.White;
+    public static Brush InkBrush => Light ? Frozen(new SolidColorBrush(LightInk)) : Brushes.White;
+    /// What hover and fill tints are mixed from: white on dark panels, black on light ones.
+    public static Color Wash => Light ? Colors.Black : Colors.White;
+    /// The near-black (or near-white) of Classic's square panels.
+    public static Color Shade => Light ? Colors.White : Colors.Black;
+    public static Brush Line => Light ? LightLine : DarkLine;
+    public static Brush Muted => Light ? LightMuted : DarkMuted;
     public static double S(double v) => v * Scale;
     // Windows' "Animation effects" setting (off when the user wants less motion).
     public static bool ReduceMotion => !SystemParameters.ClientAreaAnimation;
@@ -77,7 +110,7 @@ static class Theme
         FontSize = S(size),
         FontWeight = weight ?? FontWeights.Normal,
         FontFamily = family ?? Font,
-        Foreground = brush ?? Brushes.White,
+        Foreground = brush ?? InkBrush,
         TextTrimming = TextTrimming.CharacterEllipsis,
     };
 }

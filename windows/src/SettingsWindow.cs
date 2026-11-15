@@ -10,6 +10,69 @@ using Microsoft.Win32;
 
 namespace Rewind;
 
+/// The pages of Settings: Console lists them, Sidebar groups them into tabs, the window shows them all.
+enum SettingsPage { Capture, Video, Audio, Replay, Saving, Overlay, Hotkeys, General }
+
+/// Sidebar's tabs; each holds one or more pages.
+enum SettingsTab { Recording, Replay, Overlay, Hotkeys, General }
+
+static class SettingsPages
+{
+    public static readonly SettingsPage[] All = Enum.GetValues<SettingsPage>();
+    public static readonly SettingsTab[] Tabs = Enum.GetValues<SettingsTab>();
+
+    public static string Title(this SettingsPage p) => p switch
+    {
+        SettingsPage.Replay => "Instant Replay",
+        _ => p.ToString(),
+    };
+
+    /// Current value in a few characters, for Console's list of pages.
+    public static string Summary(this SettingsPage p)
+    {
+        var s = Settings.Shared;
+        return p switch
+        {
+            SettingsPage.Capture => s.CaptureAppId.Length == 0 ? Displays.Connected(s.DisplayId)?.Short ?? "Display" : s.CaptureAppName,
+            SettingsPage.Video => $"{s.Fps} fps · {s.Codec.Short()}",
+            SettingsPage.Audio => s.SystemAudio ? (s.Microphone ? "System + mic" : "System") : (s.Microphone ? "Mic" : "Off"),
+            SettingsPage.Replay => Format.Duration(s.ReplaySeconds),
+            SettingsPage.Saving => s.AutoCleanup ? $"{s.CleanupDays} days" : "Keep all",
+            SettingsPage.Overlay => s.OverlayLayout.Name(),
+            SettingsPage.Hotkeys => s.Hotkey(HotkeyAction.ToggleOverlay) is { IsSet: true } h ? h.Display : "—",
+            _ => "v" + Updater.CurrentVersion,
+        };
+    }
+
+    public static string Title(this SettingsTab t) => t.ToString();
+
+    /// Current values in a few characters, for the list of categories.
+    public static string Summary(this SettingsTab t)
+    {
+        var s = Settings.Shared;
+        return t switch
+        {
+            SettingsTab.Recording => $"{s.Fps} fps · {s.Codec.Short()}",
+            SettingsTab.Replay => SettingsPage.Replay.Summary(),
+            SettingsTab.Overlay => $"{s.OverlayLayout.Name()} · {s.OverlayAppearance.Short()}",
+            SettingsTab.Hotkeys => SettingsPage.Hotkeys.Summary(),
+            _ => SettingsPage.General.Summary(),
+        };
+    }
+
+    public static SettingsPage[] Pages(this SettingsTab t) => t switch
+    {
+        SettingsTab.Recording => new[] { SettingsPage.Capture, SettingsPage.Video, SettingsPage.Audio },
+        SettingsTab.Replay => new[] { SettingsPage.Replay, SettingsPage.Saving },
+        SettingsTab.Overlay => new[] { SettingsPage.Overlay },
+        SettingsTab.Hotkeys => new[] { SettingsPage.Hotkeys },
+        _ => new[] { SettingsPage.General },
+    };
+
+    public static SettingsTab Holding(SettingsPage p) => Tabs.First(t => t.Pages().Contains(p));
+}
+
+/// The separate Settings window (all pages, scrolling). The overlay shows the same pages itself.
 sealed class SettingsWindow : Window
 {
     static SettingsWindow? shared;
@@ -32,7 +95,7 @@ sealed class SettingsWindow : Window
         var w = new SettingsWindow { ShowActivated = false, ShowInTaskbar = false, WindowStartupLocation = WindowStartupLocation.Manual, Left = -30000, Top = -30000 };
         w.Show();
         w.UpdateLayout();
-        var page = w.root;
+        var page = w.content;
         ((ScrollViewer)w.Content).Content = null;
         var bg = w.TryFindResource("ApplicationBackgroundBrush") as Brush ?? SystemColors.WindowBrush;
         var host = new Border { Background = bg, Child = page, Width = w.ActualWidth, Resources = w.Resources };
@@ -42,20 +105,11 @@ sealed class SettingsWindow : Window
         return host;
     }
 
-    readonly Settings s = Settings.Shared;
-    readonly Controller c = Controller.Shared;
-    readonly StackPanel root = new() { Margin = new Thickness(20, 12, 20, 24) };
-    readonly List<Action> refreshers = new();
-    bool building;
-
-    ComboBox appPicker = null!, fallbackPicker = null!;
-    TextBlock captureFooter = null!, audioFooter = null!, estimate = null!, capturingNow = null!;
-    CheckBox mixMic = null!;
-    FrameworkElement capturingRow = null!;
-    HotkeyField? recordingField;
+    readonly SettingsContent content;
 
     SettingsWindow()
     {
+        var s = Settings.Shared;
         Title = $"Rewind Settings · v{Updater.CurrentVersion}";
         Width = 580;
         Height = 760;
@@ -66,21 +120,65 @@ sealed class SettingsWindow : Window
         ThemeMode = ThemeMode.System;
         try { Icon = BitmapFrame.Create(new Uri("pack://application:,,,/Assets/Rewind.ico")); } catch { }
 
-        Build();
-        Content = new ScrollViewer { Content = root, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        content = new SettingsContent(SettingsPages.All, inOverlay: false) { Margin = new Thickness(20, 12, 20, 24) };
+        Content = new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
 
-        SourceInitialized += (_, _) => Native.ExcludeFromCapture(new WindowInteropHelper(this).Handle, !s.ShareRewindWindows);
-        refreshers.Add(() => Native.ExcludeFromCapture(new WindowInteropHelper(this).Handle, !s.ShareRewindWindows));
+        void Exclude() => Native.ExcludeFromCapture(new WindowInteropHelper(this).Handle);
+        SourceInitialized += (_, _) => Exclude();
+
+        Deactivated += (_, _) => content.CancelRecording();
+
+    }
+}
+
+/// Settings controls for some pages (or all of them), built in code. Used by the Settings window and by the
+/// overlay, which adds Windows' Fluent styles around it with `Themed`.
+sealed class SettingsContent : StackPanel
+{
+    readonly Settings s = Settings.Shared;
+    readonly Controller c = Controller.Shared;
+    readonly StackPanel root;
+    readonly List<Action> refreshers = new();
+    readonly HashSet<SettingsPage> pages;
+    readonly bool inOverlay;
+    bool building;
+
+    ComboBox appPicker = new(), fallbackPicker = new();
+    TextBlock captureFooter = new(), audioFooter = new(), estimate = new(), capturingNow = new();
+    CheckBox mixMic = new();
+    FrameworkElement capturingRow = new Border();
+    HotkeyField? recordingField;
+
+    /// A hotkey field is waiting for keys, so the overlay shouldn't act on them (Esc included).
+    public static bool IsRecording { get; private set; }
+
+    /// `groupTitles` puts each page's name above its sections (Sidebar tabs that hold several pages).
+    public SettingsContent(IEnumerable<SettingsPage> pages, bool inOverlay, bool groupTitles = false)
+    {
+        this.pages = pages.ToHashSet();
+        this.inOverlay = inOverlay;
+        this.groupTitles = groupTitles;
+        root = this;
+        Build();
+
         PreviewKeyDown += OnPreviewKeyDown;
-        Deactivated += (_, _) => recordingField?.Cancel();
-        s.Changed += Refresh;
-        c.StateChanged += Refresh;
         // Screens plugged in or out show up in the menus right away.
         EventHandler displaysChanged = (_, _) => Dispatcher.BeginInvoke(() => { FillApps(); FillFallback(); Refresh(); });
-        SystemEvents.DisplaySettingsChanged += displaysChanged;
-        Closed += (_, _) =>
+        bool attached = false;
+        Loaded += (_, _) =>
         {
-            recordingField?.Cancel();
+            if (attached) return;
+            attached = true;
+            s.Changed += Refresh;
+            c.StateChanged += Refresh;
+            SystemEvents.DisplaySettingsChanged += displaysChanged;
+            Refresh();
+        };
+        Unloaded += (_, _) =>
+        {
+            if (!attached) return;
+            attached = false;
+            CancelRecording();
             s.Changed -= Refresh;
             c.StateChanged -= Refresh;
             SystemEvents.DisplaySettingsChanged -= displaysChanged;
@@ -88,10 +186,41 @@ sealed class SettingsWindow : Window
         Refresh();
     }
 
+    readonly bool groupTitles;
+    SettingsPage? titled;
+
+    bool Has(SettingsPage p)
+    {
+        if (!pages.Contains(p)) return false;
+        if (groupTitles && titled != p)
+        {
+            titled = p;
+            root.Children.Add(new TextBlock { Text = p.Title(), FontSize = 18, FontWeight = FontWeights.Bold, Margin = new Thickness(0, root.Children.Count == 0 ? 8 : 28, 0, 0) });
+        }
+        return true;
+    }
+
+    public void CancelRecording() => recordingField?.Cancel();
+
+    /// Adds Windows' Fluent control styles (light or dark) to an element outside the Settings window.
+    public static void Themed(FrameworkElement host, bool dark)
+    {
+        try
+        {
+            host.Resources.MergedDictionaries.Add(new ResourceDictionary
+            {
+                Source = new Uri($"pack://application:,,,/PresentationFramework.Fluent;component/Themes/Fluent.{(dark ? "Dark" : "Light")}.xaml"),
+            });
+        }
+        catch (Exception e) { Log.Error("fluent theme", e); }
+        host.SetResourceReference(TextElement.ForegroundProperty, "TextFillColorPrimaryBrush");
+    }
+
     void Build()
     {
         building = true;
 
+        current = SettingsPage.Capture;
         appPicker = new ComboBox { MinWidth = 240 };
         appPicker.DropDownOpened += (_, _) => FillApps();
         appPicker.SelectionChanged += (_, _) =>
@@ -111,6 +240,7 @@ sealed class SettingsWindow : Window
         captureFooter = Footer("");
         Section("What to capture", new[] { Row("Capture", appPicker) }, captureFooter);
 
+        current = SettingsPage.Video;
         fallbackPicker = new ComboBox { MinWidth = 240 };
         fallbackPicker.DropDownOpened += (_, _) => FillFallback();
         fallbackPicker.SelectionChanged += (_, _) =>
@@ -126,8 +256,15 @@ sealed class SettingsWindow : Window
         {
             bitrateRow.Visibility = s.Quality == Quality.Custom ? Visibility.Visible : Visibility.Collapsed;
             var notes = new List<string>();
+            int hz = Displays.RefreshRate(s.DisplayId);
+            if (hz > 0 && s.Fps > hz)
+                notes.Add($"This screen only refreshes {hz} times a second, so Windows can't capture more than {hz} fps. Above that, clips just get bigger, not smoother.");
             if (s.Fps >= 120)
-                notes.Add("120 fps makes Windows capture and convert twice as many frames as 60 fps, which uses more of the GPU your game is using. 60 fps is easier on frame rates.");
+            {
+                double x = s.Fps / 60.0;
+                string times = x == Math.Round(x) ? $"{(int)x}×" : $"{x:0.0}×";
+                notes.Add($"At {s.Fps} fps Windows captures and converts {times} as many frames as at 60 fps, which uses more of the GPU your game is using. 60 fps is easier on frame rates.");
+            }
             if (s.Codec == VideoCodec.Av1)
                 notes.Add(VideoEncoder.HasHardwareEncoder(VideoCodec.Av1)
                     ? "AV1 clips play in browsers, Discord and VLC. Windows' own players need the free AV1 Video Extension, and older phones can't play them."
@@ -135,9 +272,8 @@ sealed class SettingsWindow : Window
             videoFooter.Text = string.Join("\n\n", notes);
             videoFooter.Visibility = notes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         });
-        // AV1 is offered only on graphics cards that can encode it (or kept visible if it was chosen on another card).
-        var codecs = Enum.GetValues<VideoCodec>()
-            .Where(v => v != VideoCodec.Av1 || s.Codec == VideoCodec.Av1 || VideoEncoder.HasHardwareEncoder(VideoCodec.Av1));
+        // AV1 is always listed; the note below says when this PC's graphics card can't encode it.
+        var codecs = Enum.GetValues<VideoCodec>();
         Section("Video", new[]
         {
             fallbackRow,
@@ -145,10 +281,11 @@ sealed class SettingsWindow : Window
             Row("Frame rate", FrameRateBox()),
             Row("Quality", Combo(Enum.GetValues<Quality>().Select(q => (q.Label(), q)), s.Quality, v => s.Quality = v)),
             bitrateRow,
-            Row("Codec", Combo(codecs.Select(v => (v.Label(), v)), s.Codec, v => s.Codec = v)),
+            Row("Codec", Combo(codecs.Select(v => (v == VideoCodec.Av1 && !VideoEncoder.HasHardwareEncoder(VideoCodec.Av1) ? "AV1 (not supported by this graphics card)" : v.Label(), v)), s.Codec, v => s.Codec = v)),
             Toggle("Show mouse cursor", s.ShowCursor, v => s.ShowCursor = v),
         }, videoFooter);
 
+        current = SettingsPage.Audio;
         mixMic = new CheckBox { Content = "Mix microphone into the main track", IsChecked = s.MixMicrophone };
         mixMic.Click += (_, _) => s.MixMicrophone = mixMic.IsChecked == true;
         audioFooter = Footer("");
@@ -159,6 +296,7 @@ sealed class SettingsWindow : Window
             Pad(mixMic),
         }, audioFooter);
 
+        current = SettingsPage.Replay;
         var lengths = new[] { 15, 30, 60, 120, 180, 300, 600, 900, 1200 }
             .Select(n => (n < 60 ? $"{n} seconds" : $"{n / 60} minute{(n == 60 ? "" : "s")}", n)).ToList();
         if (!lengths.Any(l => l.n == s.ReplaySeconds)) lengths.Add(($"{s.ReplaySeconds} seconds", s.ReplaySeconds));
@@ -169,6 +307,7 @@ sealed class SettingsWindow : Window
             Toggle("Turn on Instant Replay when Rewind starts", s.StartReplayOnLaunch, v => s.StartReplayOnLaunch = v),
         }, estimate);
 
+        current = SettingsPage.Saving;
         var folder = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 280, Margin = new Thickness(0, 0, 10, 0) };
         folder.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
         refreshers.Add(() =>
@@ -198,8 +337,10 @@ sealed class SettingsWindow : Window
             Row("Keep clips for", keepFor),
         }, saveFooter);
 
+        current = SettingsPage.Overlay;
         BuildOverlaySection();
 
+        current = SettingsPage.Hotkeys;
         var hotkeyRows = HotkeyActions.All.Select(a => Row(a.Label(), new HotkeyField(this, a))).ToList();
         var reset = new Button { Content = "Reset to defaults", HorizontalAlignment = HorizontalAlignment.Left };
         reset.Click += (_, _) => s.ResetHotkeys();
@@ -207,12 +348,7 @@ sealed class SettingsWindow : Window
         Section("Hotkeys", hotkeyRows.ToArray(), Footer("Click a shortcut, then press the new keys. Press Esc to remove it, or click it again to keep it. " +
             "Hotkeys work while a game has focus. If one is taken by another app (the NVIDIA or AMD overlay uses some of the same keys), pick a different one."));
 
-        Section("Screen sharing", new[]
-        {
-            Toggle("Let screen shares see the overlay and Settings", s.ShareRewindWindows, v => s.ShareRewindWindows = v),
-        }, Footer("Friends watching your Discord, OBS or Teams screen share see the overlay and this window. " +
-                  "Your own clips still leave the overlay out (the video holds while it's open). Notifications are never shared."));
-
+        current = SettingsPage.General;
         capturingNow = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, MaxWidth = 300, TextAlignment = TextAlignment.Right };
         capturingNow.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
         capturingRow = Row("Capturing now", capturingNow);
@@ -229,8 +365,8 @@ sealed class SettingsWindow : Window
         BuildUpdatesSection();
 
         var uninstall = new Button { Content = "Uninstall Rewind…", HorizontalAlignment = HorizontalAlignment.Left };
-        uninstall.SetResourceReference(ForegroundProperty, "SystemFillColorCriticalBrush");
-        uninstall.Click += (_, _) => Uninstaller.ConfirmAndRun(this);
+        uninstall.SetResourceReference(Control.ForegroundProperty, "SystemFillColorCriticalBrush");
+        uninstall.Click += (_, _) => Uninstaller.ConfirmAndRun(Window.GetWindow(this));
         Section("Uninstall", new[] { Pad(uninstall) },
             Footer("Permanently deletes Rewind, its settings and logs, and its \"Open Rewind when Windows starts\" entry. Downloaded Rewind installers go to the Recycle Bin. Your clips are kept."));
 
@@ -285,7 +421,8 @@ sealed class SettingsWindow : Window
         }
         Action changed = () => Dispatcher.BeginInvoke(Show);
         u.Changed += changed;
-        Closed += (_, _) => u.Changed -= changed;
+        Unloaded += (_, _) => u.Changed -= changed;
+        Loaded += (_, _) => { u.Changed -= changed; u.Changed += changed; Show(); };
         Show();
 
         Section("Updates", new[]
@@ -411,23 +548,26 @@ sealed class SettingsWindow : Window
         {
             if (!dim.IsMouseCaptureWithin) dim.Value = s.OverlayDim;
             if (!size.IsMouseCaptureWithin) size.Value = s.PlayerSize;
-            sizeRow.IsEnabled = s.OverlayLayout != OverlayLayout.Tiles;
+            sizeRow.IsEnabled = s.OverlayLayout is OverlayLayout.Classic or OverlayLayout.Panes;
             sizeLabel.Opacity = sizeRow.IsEnabled ? 1 : 0.5;
         });
+        var appearanceRow = Row("Appearance", Combo(Enum.GetValues<OverlayAppearance>().Select(a => (a.Label(), a)), s.OverlayAppearance, v => s.OverlayAppearance = v));
         var preview = new Button { Content = "Preview overlay", HorizontalAlignment = HorizontalAlignment.Left };
         preview.Click += (_, _) => OverlayController.Show();
 
-        Section("Overlay", new[]
+        var rows = new List<FrameworkElement>
         {
-            Row("Layout", Combo(Enum.GetValues<OverlayLayout>().Select(l => (l.Label(), l)), s.OverlayLayout, v => s.OverlayLayout = v)),
+            Row("Layout", Combo(Labels.Layouts.Select(l => (l.Label(), l)), s.OverlayLayout, v => s.OverlayLayout = v)),
+            appearanceRow,
             Row("Accent color", accent),
             Row("Presets", presets),
             Row("Dim the game", dim),
             Row(sizeLabel, sizeRow),
             Toggle("Show hotkeys in the overlay", s.ShowHotkeys, v => s.ShowHotkeys = v),
-            Pad(preview),
-        }, Footer("The accent color is used for Instant Replay, highlights and notifications. Click the swatch for the color wheel, or type a hex code. " +
-                  "Changes apply the next time the overlay opens."));
+        };
+        if (!inOverlay) rows.Add(Pad(preview));
+        Section("Overlay", rows.ToArray(), Footer("The accent color is used for Instant Replay, highlights and notifications. Click the swatch for the color wheel, or type a hex code. " +
+                  (inOverlay ? "A new accent color shows when you go back to your clips." : "Changes apply the next time the overlay opens.")));
     }
 
     /// A display (DisplayId set) or an app (Key set).
@@ -500,17 +640,17 @@ sealed class SettingsWindow : Window
     void ChooseFolder()
     {
         var dlg = new OpenFolderDialog { Title = "Choose where to save clips", InitialDirectory = s.OutputDirectory };
-        if (dlg.ShowDialog(this) == true) s.OutputDirectory = dlg.FolderName;
+        if (dlg.ShowDialog(Window.GetWindow(this)) == true) s.OutputDirectory = dlg.FolderName;
     }
 
 
     sealed class HotkeyField : Button
     {
-        readonly SettingsWindow owner;
+        readonly SettingsContent owner;
         readonly HotkeyAction action;
         bool recording;
 
-        public HotkeyField(SettingsWindow owner, HotkeyAction action)
+        public HotkeyField(SettingsContent owner, HotkeyAction action)
         {
             this.owner = owner; this.action = action;
             SetResourceReference(StyleProperty, typeof(Button)); // subclasses don't get the theme's Button style
@@ -585,10 +725,15 @@ sealed class SettingsWindow : Window
     }
 
 
+    SettingsPage current;
+
     void Section(string title, FrameworkElement[] rows, TextBlock? footer = null)
     {
-        var header = new TextBlock { Text = title, FontWeight = FontWeights.SemiBold, FontSize = 14, Margin = new Thickness(4, 16, 0, 8) };
-        root.Children.Add(header);
+        if (!Has(current)) return;
+        // In the overlay the page already has this name above it.
+        bool repeat = inOverlay && string.Equals(title, current.Title(), StringComparison.OrdinalIgnoreCase);
+        var header = new TextBlock { Text = title, FontWeight = FontWeights.SemiBold, FontSize = 14, Margin = new Thickness(4, repeat ? 10 : 16, 0, 8) };
+        if (!repeat) root.Children.Add(header);
         var stack = new StackPanel();
         for (int i = 0; i < rows.Length; i++)
         {

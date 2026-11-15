@@ -124,7 +124,53 @@ static class SelfTest
             ok &= Inspect(recSep, audioTracks: 2, minSeconds: seconds - 0.5);
             ok &= Inspect(recMix, audioTracks: 1, minSeconds: seconds - 0.5);
             ok &= TestTrim(recSep, audioTracks: 2);
+            ok &= TestConvert(recSep, audioTracks: 2);
         }
+        return ok;
+    }
+
+    /// Re-encoding the recording to H.264 and HEVC at low, middle and top quality, whole and in part, and a
+    /// trimmed clip (which starts with an edit list): every file intact and the right length.
+    static bool TestConvert(string source, int audioTracks)
+    {
+        bool ok = true;
+        double full = Mp4Reader.Open(source).Video!.PresentedDuration;
+        var trimmed = ClipTrimmer.OutputPath(source);
+        File.Delete(trimmed);
+        try { ClipTrimmer.TrimAsync(source, 1.2, 3.7, trimmed).GetAwaiter().GetResult(); }
+        catch (Exception e) { Console.WriteLine($"FAIL convert (trim first): {e.Message}"); return false; }
+        double trimmedLength = Mp4Reader.Open(trimmed).Video!.PresentedDuration;
+
+        var cases = new List<(string src, ExportFormat format, int q, double start, double end, double want)>();
+        foreach (var format in new[] { ExportFormat.H264, ExportFormat.Hevc })
+            foreach (var q in new[] { 0, 65, 100 })
+                cases.Add((source, format, q, 0, full, full));
+        cases.Add((source, ExportFormat.Hevc, 65, 1.0, 3.0, 2.0));
+        cases.Add((trimmed, ExportFormat.Hevc, 65, 0, trimmedLength, trimmedLength));
+        foreach (var (src, format, q, start, end, want) in cases)
+        {
+            var dest = ClipTrimmer.OutputPath(src, $"{format.Label()} q{q}");
+            File.Delete(dest);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try { ClipConverter.ConvertAsync(src, start, end, format, q, dest, _ => { }).GetAwaiter().GetResult(); }
+            catch (Exception e) when (format == ExportFormat.Hevc && e.Message.Contains("encoder"))
+            {
+                Console.WriteLine($"convert {format.Label()} skipped: {e.Message}");
+                continue;
+            }
+            catch (Exception e) { Console.WriteLine($"FAIL convert {format.Label()} q{q}: {e}"); ok = false; continue; }
+            var v = Mp4Reader.Open(dest).Video!;
+            long size = new FileInfo(dest).Length;
+            string what = src == trimmed ? "trimmed clip" : start > 0 ? "part" : "whole";
+            Console.Write($"convert {what} " +
+                          $"→ {format.Label()} q{q} ({ClipConverter.Word(q)}): {v.Codec.Short()}, {v.PresentedDuration:F2}s (wanted {want:F2}s), " +
+                          $"{size / 1024} KB, {sw.ElapsedMilliseconds} ms; ");
+            bool good = Inspect(dest, audioTracks, minSeconds: want - 0.15);
+            if (v.Codec != format.Codec() || Math.Abs(v.PresentedDuration - want) > 0.1) { Console.WriteLine("FAIL convert codec or length"); good = false; }
+            ok &= good;
+            File.Delete(dest);
+        }
+        File.Delete(trimmed);
         return ok;
     }
 

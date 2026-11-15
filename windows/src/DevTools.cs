@@ -21,10 +21,29 @@ static class DevTools
                 BitmapSource? game = background == null ? null : new BitmapImage(new Uri(Path.GetFullPath(background)));
                 int w = game?.PixelWidth ?? 1600, h = game?.PixelHeight ?? 1000;
                 if (clips != null) ClipLibrary.LoadNow(Path.GetFullPath(clips));
-                foreach (var (layout, file) in new[] { (OverlayLayout.Panes, "overlay.png"), (OverlayLayout.Tiles, "overlay-tiles.png"), (OverlayLayout.Classic, "overlay-classic.png") })
+                var shots = new (OverlayLayout layout, OverlayAppearance look, SettingsPage? page, bool gallery, string file)[]
+                {
+                    (OverlayLayout.Panes, OverlayAppearance.Dark, null, false, "overlay.png"),
+                    (OverlayLayout.Classic, OverlayAppearance.Dark, null, true, "overlay-classic.png"),
+                    (OverlayLayout.Console, OverlayAppearance.Dark, null, false, "overlay-console.png"),
+                    (OverlayLayout.Sidebar, OverlayAppearance.Dark, null, false, "overlay-sidebar-dark.png"),
+                    (OverlayLayout.Sidebar, OverlayAppearance.Light, null, false, "overlay-sidebar-light.png"),
+                    (OverlayLayout.Panes, OverlayAppearance.Dark, SettingsPage.Video, false, "settings-split.png"),
+                    (OverlayLayout.Classic, OverlayAppearance.Dark, SettingsPage.Overlay, false, "settings-classic.png"),
+                    (OverlayLayout.Console, OverlayAppearance.Dark, SettingsPage.Video, false, "settings-console.png"),
+                    (OverlayLayout.Sidebar, OverlayAppearance.Light, SettingsPage.Capture, false, "settings-sidebar-light.png"),
+                    (OverlayLayout.Panes, OverlayAppearance.Light, null, false, "overlay-split-light.png"),
+                    (OverlayLayout.Classic, OverlayAppearance.Light, null, true, "overlay-classic-light.png"),
+                    (OverlayLayout.Console, OverlayAppearance.Light, null, false, "overlay-console-light.png"),
+                    (OverlayLayout.Console, OverlayAppearance.Light, SettingsPage.Replay, false, "settings-console-light.png"),
+                };
+                foreach (var (layout, look, page, gallery, file) in shots)
                 {
                     Settings.Shared.OverlayLayout = layout;
+                    Settings.Shared.OverlayAppearance = look;
                     var overlay = new OverlayWindow(() => { }, new Size(w, h));
+                    if (page is { } pg) overlay.OpenSettings(pg);
+                    if (gallery) overlay.OpenGallery();
                     overlay.ShowPreviewState(w, h);
                     var content = (FrameworkElement)overlay.Content;
                     overlay.Content = null;

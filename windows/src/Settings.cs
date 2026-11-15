@@ -17,8 +17,15 @@ enum VideoCodec { H264, Hevc, Av1 }
 
 enum Quality { Medium, High, VeryHigh, Ultra, Custom }
 
-/// Overlay layouts, chosen in Settings → Overlay. "Panes" is the saved name for Split, as on macOS.
-enum OverlayLayout { Classic, Tiles, Panes }
+/// Overlay layouts, chosen in Settings → Overlay. "Panes" is the saved name for Split, as on macOS. Tiles is
+/// gone; settings that still say "tiles" open as Console.
+enum OverlayLayout { Classic, Tiles, Panes, Console, Sidebar }
+
+/// Light, dark or the system's, for the Sidebar layout.
+enum OverlayAppearance { System, Light, Dark }
+
+/// What Trim saves: the original stream (no re-encode) or a new encode in another codec.
+enum ExportFormat { Original, H264, Hevc, Av1 }
 
 enum Resolution { Native = 0, P2160 = 2160, P1440 = 1440, P1080 = 1080, P720 = 720 }
 
@@ -53,12 +60,47 @@ static class Labels
 
     public static string Label(this Resolution r) => r == Resolution.Native ? "Native" : $"{(int)r}p";
 
-    public static string Name(this OverlayLayout l) => l switch { OverlayLayout.Classic => "Classic", OverlayLayout.Tiles => "Tiles", _ => "Split" };
+    /// The layouts offered in Settings, in order.
+    public static readonly OverlayLayout[] Layouts = { OverlayLayout.Classic, OverlayLayout.Panes, OverlayLayout.Console, OverlayLayout.Sidebar };
+
+    public static string Name(this OverlayLayout l) => l switch
+    {
+        OverlayLayout.Classic => "Classic",
+        OverlayLayout.Console or OverlayLayout.Tiles => "Console",
+        OverlayLayout.Sidebar => "Sidebar",
+        _ => "Split",
+    };
     public static string Label(this OverlayLayout l) => l switch
     {
         OverlayLayout.Classic => "Classic (ShadowPlay-style)",
-        OverlayLayout.Tiles => "Tiles (big buttons, clips below)",
+        OverlayLayout.Console or OverlayLayout.Tiles => "Console (one solid panel)",
+        OverlayLayout.Sidebar => "Sidebar (slides in from the right)",
         _ => "Split (actions beside a player)",
+    };
+
+    public static string Label(this OverlayAppearance a) => a switch
+    {
+        OverlayAppearance.Light => "Light",
+        OverlayAppearance.Dark => "Dark",
+        _ => "Match Windows",
+    };
+
+    public static string Short(this OverlayAppearance a) => a switch { OverlayAppearance.Light => "Light", OverlayAppearance.Dark => "Dark", _ => "Auto" };
+
+    public static string Label(this ExportFormat f) => f switch
+    {
+        ExportFormat.Original => "Original",
+        ExportFormat.H264 => "H.264",
+        ExportFormat.Hevc => "HEVC",
+        _ => "AV1",
+    };
+
+    public static VideoCodec? Codec(this ExportFormat f) => f switch
+    {
+        ExportFormat.H264 => VideoCodec.H264,
+        ExportFormat.Hevc => VideoCodec.Hevc,
+        ExportFormat.Av1 => VideoCodec.Av1,
+        _ => null,
     };
 }
 
@@ -225,7 +267,7 @@ sealed class Settings : INotifyPropertyChanged
         public bool MixMicrophone { get; set; } = true;
         public int ReplaySeconds { get; set; } = 120;
         public bool StartReplayOnLaunch { get; set; } = true;
-        public bool ShareRewindWindows { get; set; } = true;
+
         public bool AutoCleanup { get; set; }
         public int CleanupDays { get; set; } = 14;
         public List<string> AppPrefixes { get; set; } = new();
@@ -238,6 +280,9 @@ sealed class Settings : INotifyPropertyChanged
         public double PlayerSize { get; set; } = Theme.DefaultPlayerSize;
         public int CustomMbps { get; set; } = 20;
         public bool CheckForUpdates { get; set; } = true;
+        public OverlayAppearance OverlayAppearance { get; set; } = OverlayAppearance.System;
+        public ExportFormat ExportFormat { get; set; } = ExportFormat.Original;
+        public int ExportQuality { get; set; } = 65;
     }
 
     static readonly JsonSerializerOptions Json = new()
@@ -278,6 +323,8 @@ sealed class Settings : INotifyPropertyChanged
         x.OverlayDim = double.IsFinite(x.OverlayDim) ? Math.Clamp(x.OverlayDim, 0, 0.9) : 0.6;
         x.PlayerSize = double.IsFinite(x.PlayerSize) ? Math.Clamp(x.PlayerSize, Theme.MinPlayerSize, Theme.MaxPlayerSize) : Theme.DefaultPlayerSize;
         x.CustomMbps = Math.Clamp(x.CustomMbps, CaptureMath.MinMbps, CaptureMath.MaxMbps);
+        if (x.OverlayLayout == OverlayLayout.Tiles) x.OverlayLayout = OverlayLayout.Console;
+        x.ExportQuality = Math.Clamp(x.ExportQuality, 0, 100);
         return x;
     }
 
@@ -317,10 +364,15 @@ sealed class Settings : INotifyPropertyChanged
     public bool MixMicrophone { get => d.MixMicrophone; set => Set(d.MixMicrophone, value, v => d.MixMicrophone = v); }
     public int ReplaySeconds { get => d.ReplaySeconds; set => Set(d.ReplaySeconds, value, v => d.ReplaySeconds = v); }
     public bool StartReplayOnLaunch { get => d.StartReplayOnLaunch; set => Set(d.StartReplayOnLaunch, value, v => d.StartReplayOnLaunch = v); }
-    public bool ShareRewindWindows { get => d.ShareRewindWindows; set => Set(d.ShareRewindWindows, value, v => d.ShareRewindWindows = v); }
+
     public bool AutoCleanup { get => d.AutoCleanup; set => Set(d.AutoCleanup, value, v => d.AutoCleanup = v); }
     public int CleanupDays { get => d.CleanupDays; set => Set(d.CleanupDays, Math.Max(1, value), v => d.CleanupDays = v); }
-    public OverlayLayout OverlayLayout { get => d.OverlayLayout; set => Set(d.OverlayLayout, value, v => d.OverlayLayout = v); }
+    public OverlayLayout OverlayLayout { get => d.OverlayLayout; set => Set(d.OverlayLayout, value == OverlayLayout.Tiles ? OverlayLayout.Console : value, v => d.OverlayLayout = v); }
+    /// Light, dark or the system's, for the Sidebar layout.
+    public OverlayAppearance OverlayAppearance { get => d.OverlayAppearance; set => Set(d.OverlayAppearance, value, v => d.OverlayAppearance = v); }
+    /// Trim's "Save as" and its quality 0–100, remembered between uses.
+    public ExportFormat ExportFormat { get => d.ExportFormat; set => Set(d.ExportFormat, value, v => d.ExportFormat = v); }
+    public int ExportQuality { get => d.ExportQuality; set => Set(d.ExportQuality, Math.Clamp(value, 0, 100), v => d.ExportQuality = v); }
     /// 0xRRGGBB; used for Instant Replay, highlights and notifications.
     public uint AccentColor { get => d.AccentColor; set => Set(d.AccentColor, value & 0xFFFFFF, v => d.AccentColor = v); }
     public double OverlayDim { get => d.OverlayDim; set => Set(d.OverlayDim, Math.Clamp(value, 0, 0.9), v => d.OverlayDim = v); }
@@ -428,6 +480,31 @@ static class Displays
     {
         var all = All();
         return (id.Length > 0 ? all.FirstOrDefault(x => x.Id == id) : null) ?? all.FirstOrDefault(x => x.Primary) ?? all.FirstOrDefault();
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct DEVMODE
+    {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+        public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+        public int dmFields, dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput;
+        public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+        public short dmLogPixels;
+        public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+        public int dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE mode);
+
+    /// How many times a second the display (the fallback display when an app is chosen) refreshes; 0 if unknown.
+    public static int RefreshRate(string id)
+    {
+        var d = Find(id);
+        if (d == null) return 0;
+        var mode = new DEVMODE { dmSize = (short)Marshal.SizeOf<DEVMODE>() };
+        return EnumDisplaySettings(d.Id, -1 /* ENUM_CURRENT_SETTINGS */, ref mode) && mode.dmDisplayFrequency > 1 ? mode.dmDisplayFrequency : 0;
     }
 }
 

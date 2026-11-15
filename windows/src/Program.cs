@@ -11,6 +11,25 @@ static class Program
             if (!Console.IsOutputRedirected) Native.AttachConsole(-1);
             return SelfTest.InspectFile(args[inspect + 1]);
         }
+        // --convert <clip> <h264|hevc|av1> <quality 0-100>: Trim's Save as, from the command line, with timings.
+        int cv = Array.IndexOf(args, "--convert");
+        if (cv >= 0 && args.Length > cv + 3)
+        {
+            if (!Console.IsOutputRedirected) Native.AttachConsole(-1);
+            MF.Startup();
+            var src = Path.GetFullPath(args[cv + 1]);
+            var format = Enum.Parse<ExportFormat>(args[cv + 2], ignoreCase: true);
+            int q = int.Parse(args[cv + 3]);
+            double length = Mp4Reader.Open(src).Video?.PresentedDuration ?? 0;
+            var dest = ClipConverter.OutputPath(src, format, whole: true);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            Environment.SetEnvironmentVariable("REWIND_CONVERT_DEBUG", "1");
+            try { ClipConverter.Convert(src, 0, length, format, q, dest, _ => { }); }
+            catch (Exception e) { Console.WriteLine($"FAIL: {e}"); return 1; }
+            Console.WriteLine($"{Path.GetFileName(dest)}: {new FileInfo(dest).Length / 1024} KB (was {new FileInfo(src).Length / 1024} KB), {length:F2}s of video in {sw.ElapsedMilliseconds} ms");
+            return 0;
+        }
+
         int i = Array.IndexOf(args, "--selftest");
         if (i >= 0)
         {

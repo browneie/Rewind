@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -20,15 +21,20 @@ static class OverlayController
     public static void Show() => Show(null);
 
     /// Shows the overlay; with a path, selects that clip in the overlay's player and plays it.
-    public static void Show(string? previewPath)
+    public static void Show(string? previewPath) => Open(w => { if (previewPath != null) w.ShowClip(previewPath); });
+
+    /// Shows the overlay with Settings open (the tray menu's Settings… and hotkey warnings come here).
+    public static void ShowSettings(SettingsPage page = SettingsPage.Video) => Open(w => w.OpenSettings(page));
+
+    static void Open(Action<OverlayWindow> then)
     {
         ClipLibrary.Refresh();
         if (window != null)
         {
-            if (previewPath != null) window.ShowClip(previewPath);
+            then(window);
             return;
         }
-        // If screen shares may see the overlay, so could Rewind's own display capture: hold the video first.
+        // The overlay is hidden from screen capture, so the controller just needs to know it's open.
         Controller.Shared.OverlayChanged(true);
         var w = window = new OverlayWindow(Hide);
         w.Closed += (_, _) =>
@@ -38,7 +44,7 @@ static class OverlayController
             t.Tick += (_, _) => { t.Stop(); if (window == null) Controller.Shared.OverlayChanged(false); };
             t.Start();
         };
-        if (previewPath != null) w.ShowClip(previewPath);
+        then(w);
         w.Present();
     }
 
@@ -54,7 +60,8 @@ static class OverlayController
 /// What the overlay shows about capture; from the controller, or fixed for --render-ui.
 readonly record struct OverlayState(bool ReplayOn, double Buffered, bool Recording, double RecordingSeconds, bool Capturing, string Info);
 
-/// Fullscreen in-game overlay (default Alt+Z), in the layout picked in Settings → Overlay.
+/// Fullscreen in-game overlay (default Alt+Z), in the layout picked in Settings → Overlay. Settings open inside
+/// it too, styled for each layout.
 sealed class OverlayWindow : Window
 {
     readonly Controller c = Controller.Shared;
@@ -63,14 +70,21 @@ sealed class OverlayWindow : Window
     readonly DispatcherTimer tick = new() { Interval = TimeSpan.FromSeconds(1) };
     readonly Native.RECT bounds;
     readonly Size screen;
-    readonly OverlayLayout layout;
     readonly Grid root = new();
+    readonly Border dim;
+    readonly ContentControl layoutHost = new() { Focusable = false };
+    OverlayLayout layout;
     Action<OverlayState> refresh = _ => { };
     OverlayState? demo;
     ClipPane? pane;
     string? pendingClip;
+    SettingsPage? settingsPage;
+    SettingsContent? settingsContent;
     // Classic layout: the clip pane is shown under the bar after clicking Gallery.
     Action<bool>? setGallery;
+    bool galleryOpen;
+    // Sidebar slides in from the right.
+    TranslateTransform? slide;
 
     public OverlayWindow(Action close, Size? screenSize = null)
     {
@@ -78,7 +92,6 @@ sealed class OverlayWindow : Window
         bounds = Native.MonitorUnderCursor().bounds;
         double dpi = Native.DpiScaleUnderCursor();
         screen = screenSize ?? new Size(bounds.Width / dpi, bounds.Height / dpi);
-        layout = s.OverlayLayout;
         WindowStyle = WindowStyle.None;
         AllowsTransparency = true;
         Background = Brushes.Transparent;
@@ -88,15 +101,11 @@ sealed class OverlayWindow : Window
         Opacity = 0;
         Title = "Rewind overlay";
 
-        var dim = new Border { Background = Theme.Brush(Colors.Black, Theme.Dim) };
+        dim = new Border { Background = Theme.Brush(Colors.Black, Theme.Dim) };
         dim.MouseLeftButtonDown += (_, _) => { if (pane is { IsTrimming: true }) pane.CancelTrim(); else close(); };
         root.Children.Add(dim);
-        root.Children.Add(layout switch
-        {
-            OverlayLayout.Classic => BuildClassic(),
-            OverlayLayout.Tiles => BuildTiles(),
-            _ => BuildSplit(),
-        });
+        root.Children.Add(layoutHost);
+        Build();
 
         var arrow = new Path
         {
@@ -117,32 +126,108 @@ sealed class OverlayWindow : Window
         {
             var hwnd = new WindowInteropHelper(this).Handle;
             Native.MakeToolWindow(hwnd, noActivate: false);
-            Native.ExcludeFromCapture(hwnd, !s.ShareRewindWindows);
+            Native.ExcludeFromCapture(hwnd);
             PlaceOnScreen();
         };
         DpiChanged += (_, _) => PlaceOnScreen();
         tick.Tick += (_, _) => Refresh();
         c.StateChanged += Refresh;
+        s.PropertyChanged += OnSetting;
+        lightTheme = Theme.AppsUseLightTheme();
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnSystemTheme;
         Closed += (_, _) =>
         {
+            Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnSystemTheme;
+            Theme.Light = false;
             tick.Stop();
             cursorTick.Stop();
             c.StateChanged -= Refresh;
+            s.PropertyChanged -= OnSetting;
             pane?.Stop();
             Mouse.OverrideCursor = null;
         };
         Refresh();
     }
 
+    /// Settings changed from inside the overlay: dimming shows at once; a new layout or look when Settings close.
+    void OnSetting(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(Settings.OverlayDim)) dim.Background = Theme.Brush(Colors.Black, Theme.Dim);
+
+        // A new layout or appearance shows straight away, cross-fading (Settings stay open on the same page).
+        if (e.PropertyName is nameof(Settings.OverlayLayout) or nameof(Settings.OverlayAppearance))
+            Dispatcher.BeginInvoke(() => Build(animate: true), DispatcherPriority.Background);
+    }
+
+    bool? lightTheme;
+
+    /// Windows switched between light and dark: on "Match Windows" the overlay follows it while open.
+    void OnSystemTheme(object? sender, Microsoft.Win32.UserPreferenceChangedEventArgs e)
+    {
+        if (e.Category is not (Microsoft.Win32.UserPreferenceCategory.General or Microsoft.Win32.UserPreferenceCategory.Color)) return;
+        Dispatcher.BeginInvoke(() =>
+        {
+            bool light = Theme.AppsUseLightTheme();
+            if (lightTheme == light) return;
+            lightTheme = light;
+            if (s.OverlayAppearance == OverlayAppearance.System) Build(animate: true);
+        }, DispatcherPriority.Background);
+    }
+
+    /// (Re)builds the current layout, with Settings open or not. With `animate`, the old look fades out over
+    /// the new one.
+    void Build() => Build(animate: false);
+
+    void Build(bool animate)
+    {
+        if (animate && !Theme.ReduceMotion && demo == null) CrossFade();
+        Theme.Light = Theme.WantsLight();
+        pane?.Stop();
+        pane = null;
+        setGallery = null;
+        settingsContent = null;
+        slide = null;
+        layout = s.OverlayLayout == OverlayLayout.Tiles ? OverlayLayout.Console : s.OverlayLayout;
+        layoutHost.Content = layout switch
+        {
+            OverlayLayout.Classic => BuildClassic(),
+            OverlayLayout.Console => BuildConsole(),
+            OverlayLayout.Sidebar => BuildSidebar(),
+            _ => BuildSplit(),
+        };
+        Refresh();
+    }
+
+    public void OpenSettings(SettingsPage page)
+    {
+        if (pane is { IsBusy: true }) pane.CancelTrim();
+        if (settingsPage == page) return;
+        bool wasOpen = settingsPage != null;
+        settingsPage = page;
+        if (layout == OverlayLayout.Classic && wasOpen) { Build(); return; }
+        Build();
+    }
+
+    public void CloseSettings()
+    {
+        if (settingsPage == null) return;
+        settingsPage = null;
+        Build();
+    }
+
     void OnKey(object sender, KeyEventArgs e)
     {
+        // A hotkey field in Settings is waiting for keys: let it have them, Esc included.
+        if (SettingsContent.IsRecording) return;
         if (e.Key == Key.Escape)
         {
             e.Handled = true;
-            if (pane is { IsTrimming: true }) pane.CancelTrim(); else close();
+            if (settingsPage != null) CloseSettings();
+            else if (pane is { IsTrimming: true }) pane.CancelTrim();
+            else close();
             return;
         }
-        if (pane == null || Keyboard.Modifiers != ModifierKeys.None) return;
+        if (settingsPage != null || pane == null || Keyboard.Modifiers != ModifierKeys.None) return;
         if (pane.IsTrimming)
         {
             if (e.Key == Key.Enter) { e.Handled = true; pane.ConfirmTrim(); }
@@ -157,25 +242,45 @@ sealed class OverlayWindow : Window
         }
     }
 
-    /// Selects a clip in the player (opening Classic's Gallery for it) and plays it.
+    /// Selects a clip in the player (closing Settings, opening Classic's Gallery for it) and plays it.
     public void ShowClip(string path)
     {
+        if (settingsPage != null) { pendingClip = path; CloseSettings(); }
+        galleryOpen = true;
         setGallery?.Invoke(true);
         if (pane != null) pane.Show(path); else pendingClip = path;
     }
 
-    ClipPane MakePane(double? fixedWidth = null, double reservedWidth = 0, double reservedHeight = 0, bool showsClose = true)
+    ClipPane MakePane(double? fixedWidth = null, double reservedWidth = 0, double reservedHeight = 0, bool showsClose = true,
+                      PaneStyle style = PaneStyle.Standard, PanePalette? palette = null, double? mediaHeight = null)
     {
-        var p = new ClipPane(close, screen, fixedWidth, reservedWidth, reservedHeight, showsClose);
+        var p = new ClipPane(close, screen, fixedWidth, reservedWidth, reservedHeight, showsClose, style, palette, mediaHeight);
         if (pendingClip != null) { p.Show(pendingClip); pendingClip = null; }
         return p;
     }
+
+    /// A page (or tab) of Settings in Windows' Fluent styles, dark or light.
+    SettingsContent MakeSettings(IEnumerable<SettingsPage> pages, bool dark, bool groupTitles = false)
+    {
+        var content = new SettingsContent(pages, inOverlay: true, groupTitles);
+        SettingsContent.Themed(content, dark);
+        settingsContent = content;
+        return content;
+    }
+
+    static ScrollViewer Scroll(UIElement content) => new()
+    {
+        Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        Focusable = false,
+    };
 
     // MARK: Split
 
     /// Actions in a narrow pane beside a player showing your newest clip.
     FrameworkElement BuildSplit()
     {
+        if (settingsPage is { } page) return SettingsSheet(page, new Size(Math.Min(Theme.S(620), screen.Width - 80), Math.Min(Theme.S(500), screen.Height - 100)));
+
         var replay = new ActionRow(Sym.ReplayLength, Theme.Replay, flashOnTap: false);
         var record = new ActionRow(Sym.Record, Theme.Record, flashOnTap: false);
         var shot = new ActionRow(Sym.Camera, Theme.Screenshot, flashOnTap: true);
@@ -202,7 +307,7 @@ sealed class OverlayWindow : Window
         var sound = Theme.Text("", 10.5, brush: Theme.Muted);
         var chips = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, Theme.S(6), 0, 0) };
         chips.Children.Add(new Chip(Theme.FolderLabel, Sym.Folder, () => { close(); c.OpenClipsFolder(); }));
-        chips.Children.Add(new Chip(null, Sym.Gear, () => { close(); SettingsWindow.ShowShared(); })
+        chips.Children.Add(new Chip(null, Sym.Gear, () => OpenSettings(SettingsPage.Video))
             { ToolTip = Theme.SettingsLabel, Margin = new Thickness(Theme.S(6), 0, 0, 0) });
         var bottom = new StackPanel();
         bottom.Children.Add(info);
@@ -216,8 +321,8 @@ sealed class OverlayWindow : Window
         rows.Children.Add(shot);
 
         var actions = new DockPanel { LastChildFill = true };
-        DockPanel.SetDock(top, Dock.Top);
-        DockPanel.SetDock(bottom, Dock.Bottom);
+        DockPanel.SetDock(top, System.Windows.Controls.Dock.Top);
+        DockPanel.SetDock(bottom, System.Windows.Controls.Dock.Bottom);
         actions.Children.Add(top);
         actions.Children.Add(bottom);
         actions.Children.Add(rows);
@@ -252,90 +357,388 @@ sealed class OverlayWindow : Window
         return grid;
     }
 
-    // MARK: Tiles
-
-    /// One panel with three big tiles, a player with your newest clip under them, the recent clips and a footer.
-    FrameworkElement BuildTiles()
+    /// Settings in a dark panel: the pages on the left, the chosen page on the right. Split shows it over the
+    /// layout; Classic in the Gallery's place.
+    FrameworkElement SettingsSheet(SettingsPage page, Size size)
     {
-        double tilesWidth = Theme.S(150 * 3 + 14 * 2);
-        var replay = new IconTile(Theme.ReplayTitle, Theme.Replay);
-        var record = new IconTile(Theme.RecordTitle, Theme.Record);
-        var shot = new IconTile(Theme.ScreenshotTitle, Theme.Screenshot, flashOnTap: true);
-        replay.SetActions(() => { if (c.ReplayActive) c.SaveReplay(); else c.StartReplay(); }, c.ToggleReplay);
-        record.SetActions(c.ToggleRecording, c.ToggleRecording);
-        shot.SetActions(c.Screenshot, c.Screenshot);
+        var p = PanePalette.Overlay;
+        var nav = new StackPanel();
+        var back = new TextLink("← Back to clips", p.MutedBrush, 13, CloseSettings, tip: "Back (Esc)") { Margin = new Thickness(0, 0, 0, 6) };
+        nav.Children.Add(back);
+        var title = Theme.Text(Theme.SettingsLabel, 17, FontWeights.Bold);
+        title.Margin = new Thickness(0, 0, 0, Theme.S(10));
+        nav.Children.Add(title);
+        var tab = SettingsPages.Holding(page);
+        foreach (var t in SettingsPages.Tabs)
+            nav.Children.Add(new NavItem(t.Title(), t.Summary(), t == tab, p, bar: false, () => OpenSettings(t.Pages()[0])));
+        var navDock = new DockPanel { Width = Theme.S(170), Margin = new Thickness(0, 0, Theme.S(16), 0) };
+        navDock.Children.Add(nav);
 
-        var brand = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        brand.Children.Add(Logo(26, 8, 13));
-        var name = Theme.Text(Theme.Brand, 20, FontWeights.Bold);
-        name.Margin = new Thickness(Theme.S(9), 0, 0, 0);
-        name.VerticalAlignment = VerticalAlignment.Center;
-        brand.Children.Add(name);
-        var recSlot = new ContentControl { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(Theme.S(12), 0, 0, 0), Focusable = false };
-        brand.Children.Add(recSlot);
-        var info = Theme.Text("", 12, brush: Theme.Muted);
-        info.VerticalAlignment = VerticalAlignment.Center;
-        info.Margin = new Thickness(Theme.S(20), 0, Theme.S(12), 0);
-        var closeButton = new CircleButton(Sym.Close, close) { ToolTip = "Close (Esc)" };
-        var header = new DockPanel { LastChildFill = false };
-        DockPanel.SetDock(brand, Dock.Left);
-        DockPanel.SetDock(closeButton, Dock.Right);
-        DockPanel.SetDock(info, Dock.Right);
-        header.Children.Add(brand);
-        header.Children.Add(closeButton);
-        header.Children.Add(info);
+        var head = new DockPanel { Margin = new Thickness(0, 0, 0, Theme.S(4)) };
+        var x = new CircleButton(Sym.Close, close) { ToolTip = "Close" };
+        DockPanel.SetDock(x, Dock.Right);
+        head.Children.Add(x);
+        var pageTitle = Theme.Text(tab.Title(), 15, FontWeights.SemiBold);
+        pageTitle.VerticalAlignment = VerticalAlignment.Center;
+        head.Children.Add(pageTitle);
+        var foot = Theme.Text("Esc to go back · changes save straight away", 10, brush: p.MutedBrush);
+        foot.Margin = new Thickness(0, Theme.S(8), 0, 0);
+        var main = new DockPanel();
+        DockPanel.SetDock(head, System.Windows.Controls.Dock.Top);
+        DockPanel.SetDock(foot, System.Windows.Controls.Dock.Bottom);
+        main.Children.Add(head);
+        main.Children.Add(foot);
+        main.Children.Add(Scroll(MakeSettings(SettingsPages.Holding(page).Pages(), dark: !Theme.Light, groupTitles: SettingsPages.Holding(page).Pages().Length > 1)));
 
-        var tiles = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, Theme.S(18), 0, Theme.S(18)) };
-        tiles.Children.Add(replay);
-        record.Margin = new Thickness(Theme.S(14), 0, Theme.S(14), 0);
-        tiles.Children.Add(record);
-        tiles.Children.Add(shot);
+        var body = new DockPanel();
+        DockPanel.SetDock(navDock, Dock.Left);
+        body.Children.Add(navDock);
+        body.Children.Add(main);
+        var surface = Surface(body, Theme.S(Theme.Radius * 0.6), Theme.S(18));
+        surface.Width = size.Width;
+        surface.Height = size.Height;
+        surface.HorizontalAlignment = HorizontalAlignment.Center;
+        surface.VerticalAlignment = VerticalAlignment.Center;
+        refresh = _ => { };
+        return surface;
+    }
 
-        var sound = Theme.Text("", 12, brush: Theme.Muted);
-        sound.VerticalAlignment = VerticalAlignment.Center;
-        var chips = new StackPanel { Orientation = Orientation.Horizontal };
-        chips.Children.Add(new Chip(Theme.FolderLabel, Sym.Folder, () => { close(); c.OpenClipsFolder(); }));
-        chips.Children.Add(new Chip(Theme.SettingsLabel, Sym.Gear, () => { close(); SettingsWindow.ShowShared(); }) { Margin = new Thickness(Theme.S(8), 0, 0, 0) });
-        var footer = new DockPanel { LastChildFill = false, Margin = new Thickness(0, Theme.S(18), 0, 0) };
-        DockPanel.SetDock(chips, Dock.Left);
-        DockPanel.SetDock(sound, Dock.Right);
-        footer.Children.Add(chips);
-        footer.Children.Add(sound);
+    // MARK: Console
 
-        pane = MakePane(fixedWidth: tilesWidth, reservedHeight: Theme.S(420), showsClose: false);
-        var stack = new StackPanel();
-        stack.Children.Add(header);
-        stack.Children.Add(tiles);
-        stack.Children.Add(pane);
-        stack.Children.Add(footer);
-        var panel = Surface(stack, Theme.S(Theme.Radius), Theme.S(22));
-        panel.HorizontalAlignment = HorizontalAlignment.Center;
-        panel.VerticalAlignment = VerticalAlignment.Center;
+    static PanePalette ConsolePalette => Theme.Light ? PanePalette.ConsoleLight : PanePalette.Console;
+    static Brush ConsoleBg => Theme.Brush(ConsolePalette.Bg, 0.97);
+    static Brush ConsoleLine => ConsolePalette.LineBrush;
+    static Brush ConsoleDim => ConsolePalette.MutedBrush;
+    static Brush ConsoleSoft => Theme.Brush(ConsolePalette.Text, 0.75);
 
-        refresh = st =>
+    /// One solid panel: actions and capture details on the left; the clip, its details and a filmstrip on the right.
+    FrameworkElement BuildConsole()
+    {
+        const double side = 270;
+        double width = Math.Min(1200, screen.Width - 100), height = Math.Min(740, screen.Height - 110);
+        var p = ConsolePalette;
+        Border Hr() => new() { Height = 1, Background = ConsoleLine };
+        Border Vr() => new() { Width = 1, Background = ConsoleLine };
+
+        var left = new DockPanel { Width = side, LastChildFill = true };
+        var info = new StackPanel { Margin = new Thickness(18, 14, 18, 14) };
+        Action<OverlayState> fillInfo = st =>
         {
-            replay.Update(Sym.ReplayLength, st.ReplayOn ? "ON" : null,
-                st.ReplayOn ? s.Hotkey(HotkeyAction.SaveReplay) : s.Hotkey(HotkeyAction.ToggleReplay),
-                st.ReplayOn ? $"Save last {Format.Duration(st.Buffered)}" : "Click to turn on",
-                st.ReplayOn ? "Right-click to turn off" : null,
-                st.ReplayOn ? st.Buffered / Math.Max(s.ReplaySeconds, 1) : null);
-            record.Update(st.Recording ? Sym.Stop : Sym.Record, st.Recording ? "REC" : null, s.Hotkey(HotkeyAction.ToggleRecording),
-                st.Recording ? "Click to stop" : "Start recording", null, null);
-            shot.Update(Sym.Camera, null, s.Hotkey(HotkeyAction.Screenshot), "Full-res PNG", null, null);
-            recSlot.Content = st.Recording ? new RecPill { Text = Format.Duration(st.RecordingSeconds) } : null;
-            info.Text = st.Capturing ? st.Info : "Not capturing";
-            sound.Text = SoundText();
+            info.Children.Clear();
+            foreach (var l in CaptureLines(st)) info.Children.Add(new TextBlock { Text = l, FontFamily = Theme.Mono, FontSize = 12, Foreground = ConsoleDim, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 0, 0, 6) });
         };
+        FrameworkElement main;
+        refresh = _ => { };
+
+        if (settingsPage is { } page)
+        {
+            var settingsTitle = ClipPane.Plain(Theme.SettingsLabel, 15, p.TextBrush);
+            settingsTitle.FontWeight = FontWeights.SemiBold;
+            var head = Header52(settingsTitle, new TextLink("← Clips", ConsoleSoft, 13, CloseSettings, tip: "Back (Esc)"), 18);
+            var nav = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
+            var tab = SettingsPages.Holding(page);
+            foreach (var t in SettingsPages.Tabs)
+                nav.Children.Add(new NavItem(t.Title(), t.Summary(), t == tab, p, bar: true, () => OpenSettings(t.Pages()[0])));
+            Put(left, head, System.Windows.Controls.Dock.Top); Put(left, Hr(), System.Windows.Controls.Dock.Top);
+            Put(left, info, System.Windows.Controls.Dock.Bottom); Put(left, Hr(), System.Windows.Controls.Dock.Bottom);
+            left.Children.Add(nav);
+
+            var mainDock = new DockPanel();
+            var x = new TextLink("", ConsoleDim, 11, close, tip: "Close") { FontFamily = Theme.Symbols };
+            Put(mainDock, Header52(x, ClipPane.Plain(tab.Title(), 15, p.TextBrush), 24), System.Windows.Controls.Dock.Top);
+            Put(mainDock, Hr(), System.Windows.Controls.Dock.Top);
+            var foot = new Border { Height = 40, Padding = new Thickness(24, 0, 24, 0), Child = ClipPane.Plain("Esc to go back · changes save straight away", 12, ConsoleDim) };
+            Put(mainDock, foot, System.Windows.Controls.Dock.Bottom);
+            Put(mainDock, Hr(), System.Windows.Controls.Dock.Bottom);
+            var content = MakeSettings(SettingsPages.Holding(page).Pages(), dark: !Theme.Light, groupTitles: SettingsPages.Holding(page).Pages().Length > 1);
+            content.Margin = new Thickness(24, 6, 24, 12);
+            mainDock.Children.Add(Scroll(content));
+            main = mainDock;
+            refresh = st => fillInfo(st);
+        }
+        else
+        {
+            var brandName = ClipPane.Plain(Theme.Brand, 15, p.TextBrush);
+            brandName.FontWeight = FontWeights.SemiBold;
+            var toggleKey = ClipPane.Plain("", 12, ConsoleDim, Theme.Mono);
+            var head = Header52(toggleKey, brandName, 18);
+            var replay = new ConsoleRow(Theme.Replay);
+            var record = new ConsoleRow(Theme.Record);
+            var shot = new ConsoleRow(Theme.Accent, flashOnTap: true);
+            replay.SetActions(() => { if (c.ReplayActive) c.SaveReplay(); else c.StartReplay(); }, c.ToggleReplay);
+            record.SetActions(c.ToggleRecording, c.ToggleRecording);
+            shot.SetActions(c.Screenshot, c.Screenshot);
+            var rows = new StackPanel();
+            rows.Children.Add(replay); rows.Children.Add(record); rows.Children.Add(shot);
+
+            var footer = new Grid { Height = 42 };
+            footer.ColumnDefinitions.Add(new ColumnDefinition());
+            footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1) });
+            footer.ColumnDefinitions.Add(new ColumnDefinition());
+            var folder = new TextLink(Theme.FolderLabel, Theme.InkBrush, 13, () => { close(); c.OpenClipsFolder(); }) { Margin = new Thickness(18, 0, 18, 0) };
+            var settings = new TextLink(Theme.SettingsLabel, Theme.InkBrush, 13, () => OpenSettings(SettingsPage.Video)) { Margin = new Thickness(18, 0, 18, 0) };
+            var divider = Vr();
+            Grid.SetColumn(divider, 1); Grid.SetColumn(settings, 2);
+            footer.Children.Add(folder); footer.Children.Add(divider); footer.Children.Add(settings);
+
+            Put(left, head, System.Windows.Controls.Dock.Top); Put(left, Hr(), System.Windows.Controls.Dock.Top); Put(left, rows, System.Windows.Controls.Dock.Top);
+            Put(left, footer, System.Windows.Controls.Dock.Bottom); Put(left, Hr(), System.Windows.Controls.Dock.Bottom); Put(left, info, System.Windows.Controls.Dock.Bottom); Put(left, Hr(), System.Windows.Controls.Dock.Bottom);
+            left.Children.Add(new Border());
+
+            double mainW = width - side - 3; // less the panel's border
+            double mediaH = Math.Max(height - 52 - 1 - 18 - Theme.S(36) - (94 + 22 + 36), 180);
+            pane = MakePane(fixedWidth: mainW - 36, showsClose: true, style: PaneStyle.Console, palette: p, mediaHeight: mediaH);
+            pane.Margin = new Thickness(18, 18, 18, 18);
+            var mainDock = new DockPanel();
+            Put(mainDock, pane.Header, System.Windows.Controls.Dock.Top);
+            Put(mainDock, Hr(), System.Windows.Controls.Dock.Top);
+            mainDock.Children.Add(pane);
+            main = mainDock;
+
+            refresh = st =>
+            {
+                var toggle = Shown(s.Hotkey(HotkeyAction.ToggleOverlay));
+                toggleKey.Text = toggle ?? "";
+                replay.Update(st.ReplayOn ? "Save replay" : Theme.ReplayTitle,
+                    st.ReplayOn ? $"● {Format.Duration(st.Buffered)} buffered" : "Off · click to turn on",
+                    st.ReplayOn ? Theme.Brush(Theme.Accent) : ConsoleDim, st.ReplayOn ? "Right-click to turn off" : null,
+                    Shown(st.ReplayOn ? s.Hotkey(HotkeyAction.SaveReplay) : s.Hotkey(HotkeyAction.ToggleReplay)), st.ReplayOn);
+                record.Update(st.Recording ? "Stop recording" : Theme.RecordTitle,
+                    st.Recording ? $"● {Format.Duration(st.RecordingSeconds)}" : "Not recording",
+                    st.Recording ? Theme.Brush(Theme.Record) : ConsoleDim, null, Shown(s.Hotkey(HotkeyAction.ToggleRecording)), st.Recording);
+                shot.Update(Theme.ScreenshotTitle, null, ConsoleDim, null, Shown(s.Hotkey(HotkeyAction.Screenshot)), false);
+                fillInfo(st);
+            };
+        }
+
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(side) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition());
+        var vr = Vr();
+        Grid.SetColumn(vr, 1); Grid.SetColumn(main, 2);
+        grid.Children.Add(left); grid.Children.Add(vr); grid.Children.Add(main);
+        var panel = new Border
+        {
+            Width = width, Height = height, Background = ConsoleBg, BorderBrush = ConsoleLine, BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(6), Child = grid, ClipToBounds = true,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            Effect = new DropShadowEffect { BlurRadius = 30, ShadowDepth = 12, Direction = 270, Opacity = 0.45, Color = Colors.Black },
+        };
+        TextElement.SetForeground(panel, p.TextBrush);
         return panel;
+    }
+
+    static void Put(DockPanel panel, UIElement child, Dock dock)
+    {
+        DockPanel.SetDock(child, dock);
+        panel.Children.Add(child);
+    }
+
+    /// A 52-high header row: `left` and `right`, padded.
+    static Border Header52(FrameworkElement right, FrameworkElement left, double pad)
+    {
+        var row = new DockPanel { LastChildFill = true };
+        right.VerticalAlignment = left.VerticalAlignment = VerticalAlignment.Center;
+        DockPanel.SetDock(right, System.Windows.Controls.Dock.Right);
+        row.Children.Add(right);
+        row.Children.Add(left);
+        return new Border { Height = 52, Padding = new Thickness(pad, 0, pad, 0), Child = row };
+    }
+    static string? Shown(Hotkey h) => Theme.ShowHotkeys && h.IsSet ? h.Display : null;
+
+    /// What's being captured, as short lines: "Display 1", "2048×1280 · 120 fps", "HEVC · 33 Mbps", sound.
+    List<string> CaptureLines(OverlayState st)
+    {
+        if (!st.Capturing || st.Info.Length == 0) return new() { "Not capturing" };
+        var parts = st.Info.Split(" · ");
+        var lines = new List<string> { parts[0] };
+        for (int i = 1; i < parts.Length; i += 2) lines.Add(string.Join(" · ", parts.Skip(i).Take(2)));
+        lines.Add(s.SystemAudio ? (s.Microphone ? "System audio + mic" : "System audio") : (s.Microphone ? "Microphone" : "No sound"));
+        return lines;
+    }
+
+    // MARK: Sidebar
+
+    /// Sidebar's own light and dark colors, following Settings → Overlay → Appearance like every layout.
+    static PanePalette SidebarPalette() => Theme.Light ? PanePalette.SidebarLight : PanePalette.SidebarDark;
+
+    /// Puts a picture of the overlay as it looks now over the rebuilt one and fades it out.
+    void CrossFade()
+    {
+        if (layoutHost.ActualWidth < 1 || layoutHost.ActualHeight < 1) return;
+        try
+        {
+            var dpi = VisualTreeHelper.GetDpi(this);
+            var bmp = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                (int)Math.Ceiling(layoutHost.ActualWidth * dpi.DpiScaleX), (int)Math.Ceiling(layoutHost.ActualHeight * dpi.DpiScaleY),
+                96 * dpi.DpiScaleX, 96 * dpi.DpiScaleY, PixelFormats.Pbgra32);
+            bmp.Render(layoutHost);
+            bmp.Freeze();
+            var snapshot = new Image { Source = bmp, Stretch = Stretch.Fill, IsHitTestVisible = false };
+            root.Children.Insert(root.Children.IndexOf(layoutHost) + 1, snapshot);
+            var fade = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(320)) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseInOut } };
+            fade.Completed += (_, _) => root.Children.Remove(snapshot);
+            snapshot.BeginAnimation(OpacityProperty, fade);
+        }
+        catch (Exception e) { Log.Error("overlay cross-fade", e); }
+    }
+
+    /// A full-height panel that slides in from the right edge, in light or dark (Settings → Overlay).
+    FrameworkElement BuildSidebar()
+    {
+        const double width = 470, pad = 30;
+        var p = SidebarPalette();
+        var panel = new DockPanel { LastChildFill = true };
+        Border Line(Thickness t) => new() { BorderBrush = p.LineBrush, BorderThickness = t };
+
+        TextBlock Big(string text)
+        {
+            var t = ClipPane.Plain(text, 30, p.TextBrush);
+            t.FontWeight = FontWeights.Bold;
+            return t;
+        }
+        FrameworkElement CloseX() => new TextLink("", p.MutedBrush, 12, close, tip: "Close (Esc)") { FontFamily = Theme.Symbols, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 8, 0, 0) };
+        var footInfo = ClipPane.Plain("", 12, p.MutedBrush, Theme.Mono);
+        footInfo.HorizontalAlignment = HorizontalAlignment.Right;
+        Border Footer(params FrameworkElement[] links)
+        {
+            var row = new DockPanel { LastChildFill = true };
+            foreach (var l in links)
+            {
+                l.Margin = new Thickness(0, 0, 22, 0);
+                DockPanel.SetDock(l, System.Windows.Controls.Dock.Left);
+                row.Children.Add(l);
+            }
+            row.Children.Add(footInfo);
+            var b = Line(new Thickness(0, 1, 0, 0));
+            b.Padding = new Thickness(pad, 16, pad, 16);
+            b.Child = row;
+            return b;
+        }
+        Action<OverlayState> fillFoot = st =>
+        {
+            var l = CaptureLines(st);
+            footInfo.Text = l.Count > 2 ? l[1] + " · " + l[2].Split(" · ")[0] : l.FirstOrDefault() ?? "";
+        };
+
+        if (settingsPage is { } page)
+        {
+            var tab = SettingsPages.Holding(page);
+            var head = new DockPanel { Margin = new Thickness(pad, 30, pad, 18) };
+            var x = CloseX();
+            DockPanel.SetDock(x, System.Windows.Controls.Dock.Right);
+            head.Children.Add(x);
+            var titles = new StackPanel();
+            titles.Children.Add(new TextLink("← Back to clips", p.MutedBrush, 13, CloseSettings, tip: "Back (Esc)") { Margin = new Thickness(0, 0, 0, 6), HorizontalAlignment = HorizontalAlignment.Left });
+            titles.Children.Add(Big(Theme.SettingsLabel));
+            head.Children.Add(titles);
+            var tabs = new StackPanel { Orientation = Orientation.Horizontal };
+            foreach (var t in SettingsPages.Tabs)
+            {
+                bool on = t == tab;
+                var label = ClipPane.Plain(t.Title(), 13, on ? p.TextBrush : p.MutedBrush);
+                if (on) label.FontWeight = FontWeights.SemiBold;
+                var b = new Border
+                {
+                    Child = label, Padding = new Thickness(0, 0, 0, 12), Margin = new Thickness(0, 0, 20, 0), Cursor = Cursors.Hand,
+                    BorderBrush = p.TextBrush, BorderThickness = new Thickness(0, 0, 0, on ? 2 : 0), Background = Brushes.Transparent,
+                };
+                var target = t;
+                b.MouseLeftButtonDown += (_, e) => e.Handled = true;
+                b.MouseLeftButtonUp += (_, e) => { e.Handled = true; OpenSettings(target.Pages()[0]); };
+                tabs.Children.Add(b);
+            }
+            var tabBar = Line(new Thickness(0, 0, 0, 1));
+            tabBar.Padding = new Thickness(pad, 0, pad, 0);
+            tabBar.Child = tabs;
+            var content = MakeSettings(tab.Pages(), p.Dark, groupTitles: tab.Pages().Length > 1);
+            content.Margin = new Thickness(pad, 8, pad, 20);
+            Put(panel, head, System.Windows.Controls.Dock.Top);
+            Put(panel, tabBar, System.Windows.Controls.Dock.Top);
+            Put(panel, Footer(new TextLink(Theme.FolderLabel, p.MutedBrush, 13, () => { close(); c.OpenClipsFolder(); })), System.Windows.Controls.Dock.Bottom);
+            panel.Children.Add(Scroll(content));
+            refresh = fillFoot;
+        }
+        else
+        {
+            var head = new DockPanel { Margin = new Thickness(pad, 30, pad, 18) };
+            var x = CloseX();
+            DockPanel.SetDock(x, System.Windows.Controls.Dock.Right);
+            head.Children.Add(x);
+            var titles = new StackPanel();
+            titles.Children.Add(Big(Theme.Brand));
+            var statusRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+            var dot = new Ellipse { Width = 9, Height = 9, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
+            var status = ClipPane.Plain("", 13, p.MutedBrush);
+            statusRow.Children.Add(dot);
+            statusRow.Children.Add(status);
+            titles.Children.Add(statusRow);
+            head.Children.Add(titles);
+
+            var replay = new SidebarAction(p, Theme.Replay);
+            var record = new SidebarAction(p, Theme.Record);
+            var shot = new SidebarAction(p, Theme.Accent, flashOnTap: true);
+            replay.SetActions(() => { if (c.ReplayActive) c.SaveReplay(); else c.StartReplay(); }, c.ToggleReplay);
+            record.SetActions(c.ToggleRecording, c.ToggleRecording);
+            shot.SetActions(c.Screenshot, c.Screenshot);
+            var actions = new Grid { Height = 64 };
+            for (int i = 0; i < 5; i++) actions.ColumnDefinitions.Add(new ColumnDefinition { Width = i % 2 == 1 ? new GridLength(1) : new GridLength(1, GridUnitType.Star) });
+            int col = 0;
+            foreach (var el in new FrameworkElement[] { replay, new Border { Background = p.LineBrush }, record, new Border { Background = p.LineBrush }, shot })
+            {
+                Grid.SetColumn(el, col++);
+                actions.Children.Add(el);
+            }
+            var actionsBox = Line(new Thickness(0, 1, 0, 1));
+            actionsBox.Child = actions;
+
+            pane = MakePane(fixedWidth: width - pad * 2, showsClose: true, style: PaneStyle.Sidebar, palette: p);
+            pane.Margin = new Thickness(pad, 22, pad, 0);
+
+            Put(panel, head, System.Windows.Controls.Dock.Top);
+            Put(panel, actionsBox, System.Windows.Controls.Dock.Top);
+            Put(panel, Footer(new TextLink(Theme.FolderLabel, p.MutedBrush, 13, () => { close(); c.OpenClipsFolder(); }),
+                               new TextLink(Theme.SettingsLabel, p.MutedBrush, 13, () => OpenSettings(SettingsPage.Video))), System.Windows.Controls.Dock.Bottom);
+            Put(panel, pane, System.Windows.Controls.Dock.Top);
+            panel.Children.Add(new Border());
+
+            refresh = st =>
+            {
+                var parts = new List<string>();
+                if (st.Recording) parts.Add($"Recording {Format.Duration(st.RecordingSeconds)}");
+                parts.Add(st.ReplayOn ? $"Replay on · last {Format.Duration(st.Buffered)} ready" : "Replay off");
+                if (st.Capturing && st.Info.Length > 0) parts.Add(st.Info.Split(" · ")[0]);
+                status.Text = string.Join(" · ", parts);
+                dot.Fill = st.ReplayOn ? Theme.Brush(Theme.Accent) : Theme.Brush(p.Muted, 0.6);
+                replay.Update(st.ReplayOn ? "Save replay" : Theme.ReplayTitle,
+                    Shown(st.ReplayOn ? s.Hotkey(HotkeyAction.SaveReplay) : s.Hotkey(HotkeyAction.ToggleReplay)),
+                    st.ReplayOn ? "right-click: off" : null, st.ReplayOn);
+                record.Update(st.Recording ? "Stop" : Theme.RecordTitle, Shown(s.Hotkey(HotkeyAction.ToggleRecording)), null, st.Recording);
+                shot.Update(Theme.ScreenshotTitle, Shown(s.Hotkey(HotkeyAction.Screenshot)), null, false);
+                fillFoot(st);
+            };
+        }
+
+        slide = new TranslateTransform(Theme.ReduceMotion || settingsPage != null || IsVisible ? 0 : width + 40, 0);
+        var box = new Border
+        {
+            Width = width, Background = Theme.Brush(p.Bg), BorderBrush = p.LineBrush, BorderThickness = new Thickness(1, 0, 0, 0),
+            Child = panel, HorizontalAlignment = HorizontalAlignment.Right, ClipToBounds = true, RenderTransform = slide,
+            Effect = new DropShadowEffect { BlurRadius = 30, ShadowDepth = 0, Opacity = 0.35, Color = Colors.Black },
+        };
+        TextElement.SetForeground(box, p.TextBrush);
+        return box;
     }
 
     // MARK: Classic
 
     /// ShadowPlay-style: a title strip across the top, square tiles (label, icon, status) in a dark panel, a
-    /// Gallery panel to the right with small round buttons, and a hotkey hint bar underneath.
+    /// Gallery panel to the right with small round buttons, and a hotkey hint bar underneath. The Gallery (or
+    /// Settings) opens under the bar.
     FrameworkElement BuildClassic()
     {
-        var strip = new Grid { Height = Theme.S(40), Background = Theme.Brush(Colors.Black, 0.45), VerticalAlignment = VerticalAlignment.Top };
+        var strip = new Grid { Height = Theme.S(40), Background = Theme.Brush(Theme.Shade, Theme.Light ? 0.7 : 0.45), VerticalAlignment = VerticalAlignment.Top };
         var logo = Logo(24, 4, 12);
         logo.HorizontalAlignment = HorizontalAlignment.Left;
         logo.Margin = new Thickness(Theme.S(14), 0, 0, 0);
@@ -348,7 +751,7 @@ sealed class OverlayWindow : Window
         strip.Children.Add(closeButton);
 
         ClassicHover hovered = ClassicHover.None;
-        var hintText = Theme.Text("", 10.5, brush: Theme.Brush(Colors.White, 0.85));
+        var hintText = Theme.Text("", 10.5, brush: Theme.Brush(Theme.Wash, 0.85));
         void UpdateHint()
         {
             string Line(HotkeyAction a, string what) { var h = s.Hotkey(a); return h.IsSet ? $"Press {h.Display} to {what}" : $"No hotkey set to {what}"; }
@@ -375,10 +778,11 @@ sealed class OverlayWindow : Window
 
         var gallery = new ClassicWide(Sym.Film, "Gallery");
         var mic = new ClassicRound(Sym.Mic, () => s.Microphone = !s.Microphone);
+        var gear = new ClassicRound(Sym.Gear, () => { if (settingsPage != null) CloseSettings(); else OpenSettings(SettingsPage.Video); }) { ToolTip = Theme.SettingsLabel, On = settingsPage != null };
         var rounds = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, Theme.S(8), 0, 0) };
         rounds.Children.Add(mic);
         rounds.Children.Add(new ClassicRound(Sym.Folder, () => { close(); c.OpenClipsFolder(); }) { ToolTip = Theme.FolderLabel, Margin = new Thickness(Theme.S(8), 0, Theme.S(8), 0) });
-        rounds.Children.Add(new ClassicRound(Sym.Gear, () => { close(); SettingsWindow.ShowShared(); }) { ToolTip = Theme.SettingsLabel });
+        rounds.Children.Add(gear);
         var galleryStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         galleryStack.Children.Add(gallery);
         galleryStack.Children.Add(rounds);
@@ -394,7 +798,7 @@ sealed class OverlayWindow : Window
         bar.Children.Add(galleryPanel);
 
         var hintRow = new StackPanel { Orientation = Orientation.Horizontal };
-        var keyIcon = Icons.Make(Sym.Keyboard, Theme.S(10), Theme.Brush(Colors.White, 0.85));
+        var keyIcon = Icons.Make(Sym.Keyboard, Theme.S(10), Theme.Brush(Theme.Wash, 0.85));
         keyIcon.Margin = new Thickness(0, 0, Theme.S(6), 0);
         hintRow.Children.Add(keyIcon);
         hintRow.Children.Add(hintText);
@@ -403,28 +807,44 @@ sealed class OverlayWindow : Window
         hintPanel.HorizontalAlignment = HorizontalAlignment.Center;
         hintPanel.Margin = new Thickness(0, Theme.S(8), 0, 0);
 
-        pane = MakePane(reservedHeight: Theme.S(300));
-        var galleryPane = ClassicPanel(pane, Theme.S(14));
-        galleryPane.HorizontalAlignment = HorizontalAlignment.Center;
-        galleryPane.Margin = new Thickness(0, Theme.S(8), 0, 0);
-        galleryPane.Visibility = Visibility.Collapsed;
+        Border galleryPane;
+        if (settingsPage is { } page)
+        {
+            // Settings in the Gallery's place, as wide as the bar above.
+            var sheet = SettingsSheet(page, new Size(Math.Min(Theme.S(620), screen.Width - 80), Math.Min(Theme.S(440), screen.Height - Theme.S(300))));
+            galleryPane = new Border { Child = sheet, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, Theme.S(8), 0, 0) };
+        }
+        else
+        {
+            pane = MakePane(reservedHeight: Theme.S(300));
+            galleryPane = ClassicPanel(pane, Theme.S(14));
+            galleryPane.HorizontalAlignment = HorizontalAlignment.Center;
+            galleryPane.Margin = new Thickness(0, Theme.S(8), 0, 0);
+        }
+        bool showPane = settingsPage != null || galleryOpen;
+        galleryPane.Visibility = showPane ? Visibility.Visible : Visibility.Collapsed;
 
-        var column = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, Theme.S(150), 0, 0) };
+        var column = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, Theme.S(showPane ? 64 : 150), 0, 0) };
         column.Children.Add(bar);
         column.Children.Add(hintPanel);
         column.Children.Add(galleryPane);
+        gallery.On = galleryOpen && settingsPage == null;
 
-        bool open = false;
         setGallery = on =>
         {
-            if (open == on) return;
-            open = on;
+            if (settingsPage != null) { if (on) { galleryOpen = true; CloseSettings(); } return; }
+            if (galleryOpen == on && galleryPane.Visibility == (on ? Visibility.Visible : Visibility.Collapsed)) return;
+            galleryOpen = on;
             gallery.On = on;
             galleryPane.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
             column.Margin = new Thickness(0, Theme.S(on ? 64 : 150), 0, 0);
             if (on && !Theme.ReduceMotion) galleryPane.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(150)));
         };
-        gallery.Clicked = () => setGallery(!open);
+        gallery.Clicked = () =>
+        {
+            if (settingsPage != null) { galleryOpen = true; CloseSettings(); }
+            else setGallery(!galleryOpen);
+        };
 
         var rootGrid = new Grid();
         rootGrid.Children.Add(column);
@@ -465,7 +885,7 @@ sealed class OverlayWindow : Window
         {
             Padding = new Thickness(padding),
             CornerRadius = new CornerRadius(radius),
-            Background = Theme.Brush(Theme.PanelBase, Theme.PanelOpacity),
+            Background = Theme.Brush(Theme.PanelBase, Theme.Light ? 0.96 : Theme.PanelOpacity),
             BorderBrush = Theme.Line,
             BorderThickness = new Thickness(1),
             Child = child,
@@ -485,8 +905,8 @@ sealed class OverlayWindow : Window
     /// Near-black, square-cornered panel of the Classic layout.
     static Border ClassicPanel(UIElement child, double padding) => new()
     {
-        Background = Theme.Brush(Colors.Black, 0.78),
-        BorderBrush = Theme.Brush(Colors.White, 0.08),
+        Background = Theme.Brush(Theme.Shade, Theme.Light ? 0.9 : 0.78),
+        BorderBrush = Theme.Brush(Theme.Wash, 0.08),
         BorderThickness = new Thickness(1),
         Padding = new Thickness(padding),
         Child = child,
@@ -537,6 +957,8 @@ sealed class OverlayWindow : Window
         if (n > 0) Native.ShowCursor(false);
         UpdateCursor();
         BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(120)));
+        if (slide is { X: > 0 })
+            slide.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(260)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
         tick.Start();
         cursorTick.Start();
     }
@@ -553,16 +975,156 @@ sealed class OverlayWindow : Window
     {
         tick.Stop();
         c.StateChanged -= Refresh;
+        if (slide != null) { slide.BeginAnimation(TranslateTransform.XProperty, null); slide.X = 0; }
         int mbps = (int)(CaptureMath.Bitrate((width, height), 60, Quality.High, VideoCodec.H264) * EncoderTuning.For(VideoCodec.H264).BitrateFactor / 1_000_000);
-        demo = new OverlayState(true, 84, false, 0, true, $"{width}×{height} · 60 fps · H.264 · {mbps} Mbps");
+        demo = new OverlayState(true, 84, false, 0, true, $"Display 1 · {width}×{height} · 60 fps · H.264 · {mbps} Mbps");
         Refresh();
     }
 
     /// For --render-ui: Classic with its Gallery open.
-    public void OpenGallery() => setGallery?.Invoke(true);
+    public void OpenGallery() { galleryOpen = true; setGallery?.Invoke(true); }
 
     void Refresh() => refresh(demo ?? new OverlayState(c.ReplayActive, c.BufferedSeconds, c.Recording,
         c.RecordingStart is { } start ? (DateTime.Now - start).TotalSeconds : 0, c.IsCapturing, c.CaptureInfo));
+}
+
+/// A page in the list of Settings pages: its name and current value; selected with a bar (Console) or a fill.
+sealed class NavItem : Border
+{
+    public NavItem(string title, string detail, bool on, PanePalette p, bool bar, Action open)
+    {
+        var row = new DockPanel { LastChildFill = true };
+        var d = ClipPane.Plain(detail, bar ? 12 : 10.5 * Theme.Scale, p.MutedBrush, Theme.Mono);
+        d.MaxWidth = bar ? 120 : Theme.S(80);
+        d.Margin = new Thickness(8, 0, 0, 0);
+        DockPanel.SetDock(d, Dock.Right);
+        row.Children.Add(d);
+        var t = ClipPane.Plain(title, bar ? 14 : 12 * Theme.Scale, on ? p.TextBrush : Theme.Brush(p.Text, 0.85));
+        if (on) t.FontWeight = FontWeights.SemiBold;
+        row.Children.Add(t);
+        Child = row;
+        Padding = bar ? new Thickness(18, 11, 18, 11) : new Thickness(Theme.S(10), Theme.S(6), Theme.S(10), Theme.S(6));
+        CornerRadius = new CornerRadius(bar ? 0 : Theme.S(8));
+        BorderBrush = Theme.Brush(Theme.Accent);
+        BorderThickness = new Thickness(bar && on ? 2 : 0, 0, 0, 0);
+        Brush idle = on ? p.WashBrush(bar ? 0.035 : 0.1) : Brushes.Transparent;
+        Background = idle;
+        Cursor = Cursors.Hand;
+        MouseEnter += (_, _) => { if (!on) Background = p.WashBrush(0.05); };
+        MouseLeave += (_, _) => Background = idle;
+        MouseLeftButtonDown += (_, e) => e.Handled = true;
+        MouseLeftButtonUp += (_, e) => { e.Handled = true; if (!on) open(); };
+    }
+}
+
+/// Console's action row: title, a status line and the hotkey; a bar in the tint when on.
+sealed class ConsoleRow : ClickBorder
+{
+    readonly Color tint;
+    readonly bool flashOnTap;
+    readonly TextBlock title, sub, key;
+    readonly Border bar, flash;
+    string subText = "";
+    string? hoverSub;
+    bool on;
+
+    public ConsoleRow(Color tint, bool flashOnTap = false)
+    {
+        this.tint = tint; this.flashOnTap = flashOnTap;
+        title = ClipPane.Plain("", 15, Theme.InkBrush);
+        sub = ClipPane.Plain("", 12, Brushes.Gray, Theme.Mono);
+        sub.Margin = new Thickness(0, 5, 0, 0);
+        key = ClipPane.Plain("", 12, Theme.Muted, Theme.Mono);
+        var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        texts.Children.Add(title);
+        texts.Children.Add(sub);
+        var row = new DockPanel { LastChildFill = true, Margin = new Thickness(18, 16, 18, 16) };
+        DockPanel.SetDock(key, Dock.Right);
+        row.Children.Add(key);
+        row.Children.Add(texts);
+        bar = new Border { Width = 2, HorizontalAlignment = HorizontalAlignment.Left, Background = Theme.Brush(tint) };
+        flash = new Border { Background = Theme.InkBrush, Opacity = 0, IsHitTestVisible = false };
+        var grid = new Grid();
+        grid.Children.Add(row);
+        grid.Children.Add(bar);
+        grid.Children.Add(flash);
+        Child = grid;
+        BorderBrush = Theme.Line;
+        BorderThickness = new Thickness(0, 0, 0, 1);
+    }
+
+    public void Update(string title, string? sub, Brush subBrush, string? hoverSub, string? key, bool on)
+    {
+        this.title.Text = title;
+        subText = sub ?? "";
+        this.hoverSub = hoverSub;
+        this.sub.Foreground = subBrush;
+        this.sub.Visibility = sub == null ? Visibility.Collapsed : Visibility.Visible;
+        this.key.Text = key ?? "";
+        this.on = on;
+        Restyle();
+    }
+
+    protected override void Fired() { if (flashOnTap) Flash(flash); }
+
+    protected override void Restyle()
+    {
+        sub.Text = Hovering ? hoverSub ?? subText : subText;
+        bar.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        Background = Theme.Brush(Theme.Wash, on ? 0.035 : Hovering ? 0.03 : 0);
+    }
+}
+
+/// Sidebar's action segment: title and hotkey; filled in the text color when on.
+sealed class SidebarAction : ClickBorder
+{
+    readonly PanePalette p;
+    readonly Color tint;
+    readonly bool flashOnTap;
+    readonly TextBlock title, key;
+    readonly Border flash;
+    string? keyText, hoverKey;
+    bool on;
+
+    public SidebarAction(PanePalette palette, Color tint, bool flashOnTap = false)
+    {
+        p = palette; this.tint = tint; this.flashOnTap = flashOnTap;
+        title = ClipPane.Plain("", 14, p.TextBrush);
+        title.FontWeight = FontWeights.SemiBold;
+        title.HorizontalAlignment = HorizontalAlignment.Center;
+        key = ClipPane.Plain("", 11, p.MutedBrush, Theme.Mono);
+        key.HorizontalAlignment = HorizontalAlignment.Center;
+        key.Margin = new Thickness(0, 4, 0, 0);
+        var stack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        stack.Children.Add(title);
+        stack.Children.Add(key);
+        flash = new Border { Background = p.WashBrush(1), Opacity = 0, IsHitTestVisible = false };
+        var grid = new Grid();
+        grid.Children.Add(stack);
+        grid.Children.Add(flash);
+        Child = grid;
+    }
+
+    public void Update(string title, string? key, string? hoverKey, bool on)
+    {
+        this.title.Text = title;
+        keyText = key;
+        this.hoverKey = hoverKey;
+        this.on = on;
+        Restyle();
+    }
+
+    protected override void Fired() { if (flashOnTap) Flash(flash); }
+
+    protected override void Restyle()
+    {
+        var k = Hovering ? hoverKey ?? keyText : keyText;
+        key.Text = k ?? "";
+        key.Visibility = k == null ? Visibility.Collapsed : Visibility.Visible;
+        title.Foreground = on ? Theme.Brush(p.Bg) : p.TextBrush;
+        key.Foreground = on ? Theme.Brush(tint) : p.MutedBrush;
+        Background = on ? p.TextBrush : p.WashBrush(Hovering ? 0.05 : 0);
+    }
 }
 
 /// A border that tells left and right clicks apart and tracks hover and press, for the overlay's action buttons.
@@ -674,9 +1236,9 @@ sealed class ActionRow : ClickBorder
         hintBox = new Border
         {
             Child = hint, Padding = new Thickness(Theme.S(5), Theme.S(2), Theme.S(5), Theme.S(2)), CornerRadius = new CornerRadius(Theme.S(4)),
-            Background = Theme.Brush(Colors.White, 0.07), Opacity = 0.75, VerticalAlignment = VerticalAlignment.Center,
+            Background = Theme.Brush(Theme.Wash, 0.07), Opacity = 0.75, VerticalAlignment = VerticalAlignment.Center,
         };
-        flash = new Border { CornerRadius = CornerRadius, Background = Brushes.White, Opacity = 0, IsHitTestVisible = false, Margin = new Thickness(-Theme.S(7)) };
+        flash = new Border { CornerRadius = CornerRadius, Background = Theme.InkBrush, Opacity = 0, IsHitTestVisible = false, Margin = new Thickness(-Theme.S(7)) };
         var row = new DockPanel { LastChildFill = true };
         DockPanel.SetDock(disc, Dock.Left);
         DockPanel.SetDock(hintBox, Dock.Right);
@@ -707,9 +1269,9 @@ sealed class ActionRow : ClickBorder
     protected override void Restyle()
     {
         caption.Text = Hovering ? hoverCaption ?? captionText : captionText;
-        disc.Update(icon, Theme.S(15), on ? Theme.Brush(tint, 0.24) : Theme.Brush(Colors.White, Hovering ? 0.12 : 0.08),
-            on ? Theme.Brush(tint) : Theme.Brush(Colors.White, 0.9), on, progress);
-        Background = on ? Theme.Brush(tint, 0.1) : Theme.Brush(Colors.White, Hovering ? 0.09 : 0.05);
+        disc.Update(icon, Theme.S(15), on ? Theme.Brush(tint, 0.24) : Theme.Brush(Theme.Wash, Hovering ? 0.12 : 0.08),
+            on ? Theme.Brush(tint) : Theme.Brush(Theme.Wash, 0.9), on, progress);
+        Background = on ? Theme.Brush(tint, 0.1) : Theme.Brush(Theme.Wash, Hovering ? 0.09 : 0.05);
         BorderBrush = on ? Theme.Brush(tint, 0.6) : Theme.Line;
         RenderTransformOrigin = new Point(0.5, 0.5);
         RenderTransform = new ScaleTransform(Pressed ? 0.97 : 1, Pressed ? 0.97 : 1);
@@ -744,7 +1306,7 @@ sealed class ClassicTile : ClickBorder
         stack.Children.Add(label);
         stack.Children.Add(disc);
         stack.Children.Add(status);
-        flash = new Border { Background = Brushes.White, Opacity = 0, IsHitTestVisible = false, Margin = new Thickness(-Theme.S(8), -Theme.S(12), -Theme.S(8), -Theme.S(12)) };
+        flash = new Border { Background = Theme.InkBrush, Opacity = 0, IsHitTestVisible = false, Margin = new Thickness(-Theme.S(8), -Theme.S(12), -Theme.S(8), -Theme.S(12)) };
         var grid = new Grid();
         grid.Children.Add(stack);
         grid.Children.Add(flash);
@@ -763,10 +1325,10 @@ sealed class ClassicTile : ClickBorder
 
     protected override void Restyle()
     {
-        disc.Update(icon, Theme.S(17), on ? Theme.Brush(tint, 0.22) : Brushes.Transparent, on ? Theme.Brush(tint) : Brushes.White, on, progress);
-        disc.Outline(on ? Theme.Brush(tint, 0.5) : Theme.Brush(Colors.White, 0.9), Theme.S(2.5));
+        disc.Update(icon, Theme.S(17), on ? Theme.Brush(tint, 0.22) : Brushes.Transparent, on ? Theme.Brush(tint) : Theme.InkBrush, on, progress);
+        disc.Outline(on ? Theme.Brush(tint, 0.5) : Theme.Brush(Theme.Wash, 0.9), Theme.S(2.5));
         status.Foreground = on ? Theme.Brush(tint) : Theme.Muted;
-        Background = Theme.Brush(Colors.White, Hovering ? 0.06 : 0);
+        Background = Theme.Brush(Theme.Wash, Hovering ? 0.06 : 0);
         BorderBrush = on || Hovering ? Theme.Brush(Theme.Accent) : Brushes.Transparent;
         disc.RenderTransformOrigin = new Point(0.5, 0.5);
         disc.RenderTransform = new ScaleTransform(Pressed ? 0.93 : 1, Pressed ? 0.93 : 1);
@@ -785,7 +1347,7 @@ sealed class ClassicWide : Border
         Cursor = Cursors.Hand;
         Padding = new Thickness(0, Theme.S(9), 0, Theme.S(9));
         var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
-        var i = Icons.Make(icon, Theme.S(15), Brushes.White);
+        var i = Icons.Make(icon, Theme.S(15), Theme.InkBrush);
         i.Margin = new Thickness(0, 0, Theme.S(8), 0);
         row.Children.Add(i);
         var t = Theme.Text(title, 11.5, FontWeights.SemiBold);
@@ -801,7 +1363,7 @@ sealed class ClassicWide : Border
 
     void Restyle()
     {
-        Background = Theme.Brush(Colors.White, hover || on ? 0.1 : 0.05);
+        Background = Theme.Brush(Theme.Wash, hover || on ? 0.1 : 0.05);
         BorderBrush = on ? Theme.Brush(Theme.Accent) : Theme.Line;
         BorderThickness = new Thickness(on ? Theme.S(1.5) : 1);
     }
@@ -832,108 +1394,9 @@ sealed class ClassicRound : Border
 
     void Restyle()
     {
-        Background = Theme.Brush(Colors.White, hover ? 0.16 : 0.08);
+        Background = Theme.Brush(Theme.Wash, hover ? 0.16 : 0.08);
         BorderBrush = on ? Theme.Brush(Theme.Accent, 0.7) : Brushes.Transparent;
-        Child = Icons.Make(icon, Theme.S(11), on ? Theme.Brush(Theme.Accent) : Brushes.White);
-    }
-}
-
-/// Big round icon button with title and hotkey hint (Tiles layout).
-sealed class IconTile : ClickBorder
-{
-    readonly Color tint;
-    readonly bool flashOnTap;
-    readonly IconDisc disc;
-    readonly TextBlock caption, hint, badge;
-    readonly Border hintBox, badgeBox, flash;
-    readonly ScaleTransform scale = new(1, 1);
-    string captionText = "", hoverCaptionText = "";
-    Sym icon = Sym.Record;
-    double? progress;
-    bool on;
-
-    public IconTile(string title, Color tint, bool flashOnTap = false)
-    {
-        this.tint = tint; this.flashOnTap = flashOnTap;
-        Width = Theme.S(150);
-        CornerRadius = new CornerRadius(Theme.S(Theme.Radius * 0.72));
-        BorderThickness = new Thickness(1);
-        Padding = new Thickness(Theme.S(12), Theme.S(18), Theme.S(12), Theme.S(14));
-
-        disc = new IconDisc(tint, 72, 3) { RenderTransformOrigin = new Point(0.5, 0.5), RenderTransform = scale };
-        var titleText = Theme.Text(title, 14, FontWeights.SemiBold);
-        titleText.HorizontalAlignment = HorizontalAlignment.Center;
-        titleText.Margin = new Thickness(0, Theme.S(9), 0, 0);
-        caption = Theme.Text("", 11.5, brush: Theme.Muted);
-        caption.HorizontalAlignment = HorizontalAlignment.Center;
-        caption.Margin = new Thickness(0, Theme.S(9), 0, 0);
-        hint = Theme.Text("", 11, FontWeights.SemiBold, family: Theme.Mono);
-        hintBox = new Border
-        {
-            Child = hint, Padding = new Thickness(Theme.S(6), Theme.S(2), Theme.S(6), Theme.S(2)),
-            CornerRadius = new CornerRadius(Theme.S(5)), Background = Theme.Brush(Colors.White, 0.07), Opacity = 0.75,
-            HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, Theme.S(9), 0, 0),
-        };
-
-        var stack = new StackPanel();
-        stack.Children.Add(disc);
-        stack.Children.Add(titleText);
-        stack.Children.Add(caption);
-        stack.Children.Add(hintBox);
-
-        badge = new TextBlock { FontSize = Theme.S(10), FontWeight = FontWeights.Black, FontFamily = Theme.Font, Foreground = Theme.Brush(tint) };
-        badgeBox = new Border
-        {
-            Child = badge, Padding = new Thickness(Theme.S(7), Theme.S(4), Theme.S(7), Theme.S(4)),
-            CornerRadius = new CornerRadius(Theme.S(20)), Background = Theme.Brush(tint, 0.25),
-            HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(0, -Theme.S(8), -Theme.S(2), 0), Visibility = Visibility.Collapsed,
-        };
-        flash = new Border
-        {
-            CornerRadius = CornerRadius, Background = Brushes.White, Opacity = 0, IsHitTestVisible = false,
-            Margin = new Thickness(-Theme.S(12), -Theme.S(18), -Theme.S(12), -Theme.S(14)),
-        };
-        var grid = new Grid();
-        grid.Children.Add(stack);
-        grid.Children.Add(badgeBox);
-        grid.Children.Add(flash);
-        Child = grid;
-    }
-
-    public void Update(Sym icon, string? badgeText, Hotkey hint, string caption, string? hoverCaption, double? progress)
-    {
-        on = badgeText != null;
-        this.icon = icon;
-        this.progress = progress;
-        this.hint.Text = hint.Display;
-        hintBox.Visibility = Theme.ShowHotkeys && hint.IsSet ? Visibility.Visible : Visibility.Collapsed;
-        captionText = caption;
-        hoverCaptionText = hoverCaption ?? caption;
-        badge.Text = badgeText ?? "";
-        badgeBox.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
-        Restyle();
-    }
-
-    protected override void Fired() { if (flashOnTap) Flash(flash); }
-
-    protected override void Restyle()
-    {
-        caption.Text = Hovering ? hoverCaptionText : captionText;
-        disc.Update(icon, Theme.S(icon is Sym.Camera ? 30 : 32), on ? Theme.Brush(tint, 0.24) : Theme.Brush(Colors.White, Hovering ? 0.11 : 0.07),
-            on ? Theme.Brush(tint) : Theme.Brush(Colors.White, 0.9), on, progress);
-        Background = on
-            ? new LinearGradientBrush(tint.WithAlpha(0.16), Color.FromArgb(13, 255, 255, 255), new Point(0, 0), new Point(0.5, 0.5))
-            : Theme.Brush(Colors.White, Hovering ? 0.09 : 0.05);
-        BorderBrush = on ? Theme.Brush(tint, 0.6) : Theme.Line;
-        double target = Pressed ? 0.94 : Hovering ? 1.04 : 1;
-        if (Theme.ReduceMotion) { scale.ScaleX = scale.ScaleY = 1; return; }
-        var anim = new DoubleAnimation(target, TimeSpan.FromMilliseconds(Pressed ? 80 : 180))
-        {
-            EasingFunction = Pressed ? new QuadraticEase { EasingMode = EasingMode.EaseOut } : new BackEase { Amplitude = 0.3, EasingMode = EasingMode.EaseOut },
-        };
-        scale.BeginAnimation(ScaleTransform.ScaleXProperty, anim);
-        scale.BeginAnimation(ScaleTransform.ScaleYProperty, anim);
+        Child = Icons.Make(icon, Theme.S(11), on ? Theme.Brush(Theme.Accent) : Theme.InkBrush);
     }
 }
 
@@ -1014,12 +1477,13 @@ class HoverButton : Border
 {
     protected readonly double IdleAlpha = 0.09, HoverAlpha = 0.16;
 
-    public HoverButton(Action action)
+    public HoverButton(Action action, PanePalette? palette = null)
     {
+        var wash = (palette ?? PanePalette.Overlay).Wash;
         Cursor = Cursors.Hand;
-        Background = Theme.Brush(Colors.White, IdleAlpha);
-        MouseEnter += (_, _) => Background = Theme.Brush(Colors.White, HoverAlpha);
-        MouseLeave += (_, _) => Background = Theme.Brush(Colors.White, IdleAlpha);
+        Background = Theme.Brush(wash, IdleAlpha);
+        MouseEnter += (_, _) => Background = Theme.Brush(wash, HoverAlpha);
+        MouseLeave += (_, _) => Background = Theme.Brush(wash, IdleAlpha);
         MouseLeftButtonUp += (_, e) => { e.Handled = true; if (IsEnabled) action(); };
         MouseLeftButtonDown += (_, e) => e.Handled = true;
     }
@@ -1027,11 +1491,11 @@ class HoverButton : Border
 
 sealed class CircleButton : HoverButton
 {
-    public CircleButton(Sym icon, Action action) : base(action)
+    public CircleButton(Sym icon, Action action, PanePalette? palette = null) : base(action, palette)
     {
         Width = Theme.S(28); Height = Theme.S(28);
         CornerRadius = new CornerRadius(Theme.S(14));
-        Child = Icons.Make(icon, Theme.S(10), Brushes.White);
+        Child = Icons.Make(icon, Theme.S(10), (palette ?? PanePalette.Overlay).TextBrush);
         VerticalAlignment = VerticalAlignment.Center;
     }
 }
@@ -1041,15 +1505,16 @@ sealed class Chip : HoverButton
     readonly TextBlock? label;
 
     /// A pill button; with no title, just the icon.
-    public Chip(string? title, Sym icon, Action action) : base(action)
+    public Chip(string? title, Sym icon, Action action, PanePalette? palette = null) : base(action, palette)
     {
+        var ink = (palette ?? PanePalette.Overlay).TextBrush;
         var row = new StackPanel { Orientation = Orientation.Horizontal };
-        var i = Icons.Make(icon, Theme.S(12), Brushes.White);
+        var i = Icons.Make(icon, Theme.S(12), ink);
         row.Children.Add(i);
         if (title != null)
         {
             i.Margin = new Thickness(0, 0, Theme.S(6), 0);
-            label = Theme.Text(title, 12, FontWeights.Medium);
+            label = Theme.Text(title, 12, FontWeights.Medium, ink);
             label.VerticalAlignment = VerticalAlignment.Center;
             row.Children.Add(label);
         }

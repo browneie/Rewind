@@ -57,6 +57,7 @@ sealed class VideoEncoder : IDisposable
     readonly IMFMediaEventGenerator? events;
     readonly Action<EncodedFrame> onFrame;
     readonly EncoderTuning tuning;
+    readonly bool realtime;
     readonly CodecConfig config;
     readonly long frameDuration;
     readonly object sync = new();
@@ -76,12 +77,14 @@ sealed class VideoEncoder : IDisposable
     public int Bitrate { get; }
     public int Pending { get { lock (sync) return pending.Count; } }
 
+    /// `realtime` false: offline encoding (converting a clip), without low-latency mode, so the encoder runs flat out.
     public VideoEncoder(Gpu gpu, int width, int height, int fps, VideoCodec codec, int bitrate, Action<EncodedFrame> onFrame,
-                        EncoderTuning? tuning = null)
+                        EncoderTuning? tuning = null, bool realtime = true)
     {
         this.gpu = gpu;
         this.onFrame = onFrame;
         this.tuning = tuning ?? EncoderTuning.For(codec);
+        this.realtime = realtime;
         bitrate = (int)Math.Max(bitrate * this.tuning.BitrateFactor, 500_000);
         Bitrate = bitrate;
         frameDuration = Clock.Second / fps;
@@ -188,7 +191,7 @@ sealed class VideoEncoder : IDisposable
         using var attrs = t.Attributes;
         bool isAsync = attrs.GetUInt32(TransformAttributeKeys.TransformAsync, out uint a).Success && a != 0;
         if (isAsync) attrs.Set(TransformAttributeKeys.TransformAsyncUnlock, 1u);
-        attrs.Set(CodecApi.LowLatencyMode, 1u);
+        attrs.Set(CodecApi.LowLatencyMode, realtime ? 1u : 0u);
 
         if (hardware)
         {
@@ -213,7 +216,7 @@ sealed class VideoEncoder : IDisposable
         CodecApi.TrySet(api, CodecApi.GopSize, (uint)Math.Max(1, Math.Round(fps * tuning.KeyframeSeconds)));
         // No B-frames: keeps PTS == DTS so clips can be cut and muxed without re-encoding.
         CodecApi.TrySet(api, CodecApi.BPictureCount, 0u);
-        CodecApi.TrySet(api, CodecApi.LowLatencyMode, true);
+        CodecApi.TrySet(api, CodecApi.LowLatencyMode, realtime);
 
         using (var outType = MediaFactory.MFCreateMediaType())
         {

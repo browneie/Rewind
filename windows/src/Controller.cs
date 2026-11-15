@@ -213,13 +213,8 @@ sealed class Controller
         if (MakeOutputPath(NamePrefix("Screenshot"), "png") is not { } path) return;
         try
         {
-            // While capturing, the screenshot is the newest frame from before the overlay opened. Otherwise a
-            // fresh capture would see a visible overlay, so close it first.
-            if (overlayVisible && settings.ShareRewindWindows && !IsCapturing)
-            {
-                OverlayController.Hide();
-                await Task.Delay(300);
-            }
+            // Rewind's own windows are hidden from screen capture, so the overlay never shows in screenshots.
+
             await engine.ScreenshotAsync(settings.DisplayId, settings.CaptureAppId, settings.ShowCursor, path);
             ClipLibrary.RefreshIfShown();
             Toast.Show("Screenshot saved", Path.GetFileName(path), Sym.Camera, Theme.Screenshot, onClick: () => OverlayController.Show(path));
@@ -295,8 +290,7 @@ sealed class Controller
 
     bool overlayVisible;
 
-    /// The overlay opened or closed. When screen shares may see it, a whole-display capture would record it
-    /// too, so the video holds while it's open (capturing one app's window never includes it).
+    /// The overlay opened or closed. It's hidden from screen capture, so recording carries on underneath it.
     public void OverlayChanged(bool visible)
     {
         overlayVisible = visible;
@@ -304,7 +298,7 @@ sealed class Controller
     }
 
     void UpdatePause() =>
-        engine.Paused = overlayVisible && settings.ShareRewindWindows && IsCapturing && engine.CapturedApp == null;
+        engine.Paused = false;
 
     public double BufferedSeconds => Router.Replay.BufferedSeconds;
     public long BufferBytes => Router.Replay.Bytes;

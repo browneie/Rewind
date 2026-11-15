@@ -74,7 +74,7 @@ sealed class Tray : IDisposable
         {
             if (a == RemoteAction.Quit) App.Quit();
             else if (a.AsHotkeyAction() is { } h) c.Perform(h);
-            else SettingsWindow.ShowShared();
+            else OverlayController.ShowSettings();
         };
         RegisterHotkeys(reportConflicts: true);
         s.HotkeysChanged += () => RegisterHotkeys(reportConflicts: true);
@@ -95,7 +95,8 @@ sealed class Tray : IDisposable
         var ui = Dispatcher.CurrentDispatcher;
         if (args.Contains("--demo-toast"))
             After(4, () => Toast.Show("Replay saved", "2:00 · Replay 2026-11-13 at 21.04.11.mp4", Sym.Check, Theme.Replay, duration: 30));
-        if (args.Contains("--settings")) SettingsWindow.ShowShared();
+        if (args.Contains("--settings")) After(1.5, () => OverlayController.ShowSettings());
+        if (args.Contains("--settings-window")) SettingsWindow.ShowShared();
         if (args.Contains("--overlay")) After(1.5, OverlayController.Show);
 
         if (s.StartReplayOnLaunch) c.StartReplay();
@@ -128,7 +129,7 @@ sealed class Tray : IDisposable
             Toast.Show("Some hotkeys are taken",
                 string.Join(", ", failed.Select(h => h.Display)) + (failed.Count == 1 ? " is" : " are") +
                 " already used by another app. Change it in Settings.",
-                Sym.Keyboard, Theme.Orange, duration: 6, onClick: SettingsWindow.ShowShared);
+                Sym.Keyboard, Theme.Orange, duration: 6, onClick: () => OverlayController.ShowSettings(SettingsPage.Hotkeys));
     }
 
 
@@ -147,7 +148,7 @@ sealed class Tray : IDisposable
         menu.Items.Add(new Forms.ToolStripSeparator());
         Add("Show Overlay", HotkeyAction.ToggleOverlay, OverlayController.Show);
         Item("Open Clips Folder", c.OpenClipsFolder);
-        Item("Settings…", SettingsWindow.ShowShared);
+        Item("Settings…", () => OverlayController.ShowSettings());
         menu.Items.Add(new Forms.ToolStripSeparator());
         Item("Quit Rewind", App.Quit);
     }
