@@ -92,7 +92,7 @@ Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download). Nothing else:
 ```powershell
 .\build.ps1              # builds build\Rewind.exe for this PC (needs the .NET 10 Desktop Runtime)
 .\build.ps1 -SelfTest    # ...and runs the pipeline self-test
-.\release.ps1 1.6.0      # signed, self-contained single-file x64 + ARM64 zips and installers in dist\
+.\release.ps1 2.0.0      # signed, self-contained single-file x64 + ARM64 zips and installers in dist\
 ```
 
 Or simply `dotnet run` from this folder. The installers need [Inno Setup](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`); their script is [`installer/Rewind.iss`](installer/Rewind.iss). Without it, `release.ps1` builds only the zips.

@@ -86,7 +86,7 @@ Requires Xcode 16 or later.
 
 ```bash
 ./build.sh            # build/Rewind.app for this Mac
-./release.sh 1.7.0    # universal, signed .dmg in dist/
+./release.sh 2.0.0    # universal, signed .dmg in dist/
 .build/release/Rewind --selftest /tmp/rewind-test   # test capture → encode → MP4 without screen permission
 ```
 
