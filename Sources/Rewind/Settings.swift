@@ -222,7 +222,7 @@ final class Settings: ObservableObject {
         static let cleanup = "autoCleanup", cleanupDays = "cleanupDays"
         static let appPrefixes = "appPrefixes"
         static let playerSize = "playerSize", customMbps = "customMbps"
-        static let autoUpdate = "checkForUpdates"
+        static let autoUpdate = "checkForUpdates", customFps = "customFps"
         static let layout = "overlayLayout", accent = "accentColor", dim = "overlayDim", showHotkeys = "showHotkeys"
     }
 
@@ -230,6 +230,10 @@ final class Settings: ObservableObject {
     @Published var captureAppID: String { didSet { d.set(captureAppID, forKey: K.appID) } }
     @Published var captureAppName: String { didSet { d.set(captureAppName, forKey: K.appName) } }
     @Published var fps: Int { didSet { d.set(fps, forKey: K.fps) } }
+    /// The frame rate was typed in (Custom…) rather than picked from 30 / 60 / 120.
+    @Published var customFps: Bool { didSet { d.set(customFps, forKey: K.customFps) } }
+    static let presetFps = [30, 60, 120]
+    static let fpsRange = 1...240
     @Published var quality: Quality { didSet { d.set(quality.rawValue, forKey: K.quality) } }
     @Published var codec: VideoCodec { didSet { d.set(codec.rawValue, forKey: K.codec) } }
     @Published var resolution: Resolution { didSet { d.set(resolution.rawValue, forKey: K.resolution) } }
@@ -273,7 +277,8 @@ final class Settings: ObservableObject {
         displayID = UInt32(clamping: d.integer(forKey: K.display))
         captureAppID = d.string(forKey: K.appID) ?? ""
         captureAppName = d.string(forKey: K.appName) ?? ""
-        fps = d.integer(forKey: K.fps)
+        fps = min(max(d.integer(forKey: K.fps), Settings.fpsRange.lowerBound), Settings.fpsRange.upperBound)
+        customFps = d.bool(forKey: K.customFps) || !Settings.presetFps.contains(d.integer(forKey: K.fps))
         quality = Quality(rawValue: d.string(forKey: K.quality) ?? "") ?? .high
         codec = VideoCodec(rawValue: d.string(forKey: K.codec) ?? "") ?? .h264
         resolution = Resolution(rawValue: d.integer(forKey: K.resolution)) ?? .native
@@ -326,7 +331,7 @@ final class Settings: ObservableObject {
 
     var captureSignature: CaptureSignature {
         CaptureSignature(displayID: displayID, appID: captureAppID, appName: captureAppName,
-                         appRunning: !captureAppID.isEmpty && AppTarget.isRunning(captureAppID), fps: fps, quality: quality, customMbps: customMbps, codec: codec, resolution: resolution,
+                         appRunning: !captureAppID.isEmpty && AppTarget.isRunning(captureAppID), fps: min(max(fps, Settings.fpsRange.lowerBound), Settings.fpsRange.upperBound), quality: quality, customMbps: customMbps, codec: codec, resolution: resolution,
                          showCursor: showCursor, systemAudio: systemAudio, microphone: microphone)
     }
 }

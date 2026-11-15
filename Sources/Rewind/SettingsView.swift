@@ -96,8 +96,21 @@ struct SettingsView: View {
                 Picker("Resolution", selection: $s.resolution) {
                     ForEach(Resolution.allCases) { Text($0.label).tag($0) }
                 }
-                Picker("Frame rate", selection: $s.fps) {
-                    ForEach([30, 60, 120], id: \.self) { Text("\($0) fps").tag($0) }
+                Picker("Frame rate", selection: fpsChoice) {
+                    ForEach(Settings.presetFps, id: \.self) { Text("\($0) fps").tag($0) }
+                    Divider()
+                    Text("Custom…").tag(0)
+                }
+                if s.customFps {
+                    LabeledContent("Custom frame rate") {
+                        HStack(spacing: 6) {
+                            TextField("", value: $s.fps, format: .number)
+                                .multilineTextAlignment(.trailing).frame(width: 56)
+                                .onSubmit { s.fps = min(max(s.fps, Settings.fpsRange.lowerBound), Settings.fpsRange.upperBound) }
+                            Stepper("", value: $s.fps, in: Settings.fpsRange, step: 1).labelsHidden()
+                            Text("fps").foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 Picker("Quality", selection: $s.quality) {
                     ForEach(Quality.allCases) { Text($0.label).tag($0) }
@@ -120,9 +133,8 @@ struct SettingsView: View {
             } header: {
                 Text("Video")
             } footer: {
-                if s.fps >= 120 {
-                    Text("120 fps makes macOS copy and convert twice as many frames as 60 fps, which uses more of the GPU your game is using. 60 fps is easier on frame rates.")
-                        .font(.caption).foregroundStyle(.secondary)
+                if !videoNotes.isEmpty {
+                    Text(videoNotes).font(.caption).foregroundStyle(.secondary)
                 }
             }
 
@@ -254,6 +266,35 @@ struct SettingsView: View {
         .defaultScrollAnchor(.top)
         .scrollPosition(id: .constant(nil as String?), anchor: .top)
         .frame(width: 520, height: 680)
+    }
+
+    /// 30 / 60 / 120, or 0 for Custom….
+    private var fpsChoice: Binding<Int> {
+        Binding(get: { s.customFps ? 0 : s.fps }, set: { v in
+            if v == 0 { s.customFps = true } else { s.customFps = false; s.fps = v }
+        })
+    }
+
+    /// Fastest refresh rate of the screen being captured (the fallback display when an app is chosen).
+    private var refreshRate: Int {
+        let id = Displays.resolve(s.displayID)
+        let screen = NSScreen.screens.first {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id
+        } ?? NSScreen.main
+        return screen?.maximumFramesPerSecond ?? 60
+    }
+
+    private var videoNotes: String {
+        var notes: [String] = []
+        if s.fps > refreshRate {
+            notes.append("This screen only refreshes \(refreshRate) times a second, so macOS can't capture more than \(refreshRate) fps. Above that, clips just get bigger, not smoother.")
+        }
+        if s.fps >= 120 {
+            let x = Double(s.fps) / 60
+            let times = x == x.rounded() ? "\(Int(x))×" : String(format: "%.1f×", x)
+            notes.append("At \(s.fps) fps macOS copies and converts \(times) as many frames as at 60 fps, which uses more of the GPU your game is using. 60 fps is easier on frame rates.")
+        }
+        return notes.joined(separator: "\n\n")
     }
 
     private var audioFooter: String {
