@@ -91,8 +91,37 @@ enum SelfTest {
             if !inspect(url, audioTracks: 1) { failed = true }
         }
         if !testTrim(recURL) { failed = true }
+        if !testConvert(recURL) { failed = true }
         if !testCleanup(dir: dir) { failed = true }
         return failed ? 1 : 0
+    }
+
+    /// Re-encoding the recording to H.264 and HEVC at low, middle and top quality: every file intact and
+    /// full length. (The synthetic frames are too plain to compare sizes; that was checked on real clips.)
+    private static func testConvert(_ source: URL) -> Bool {
+        var ok = true
+        for format in [ExportFormat.h264, .hevc] {
+            for q in [0, 65, 100] {
+                let dest = ClipTrimmer.outputURL(for: source, label: "\(format.label) q\(q)")
+                try? FileManager.default.removeItem(at: dest)
+                let sem = DispatchSemaphore(value: 0)
+                nonisolated(unsafe) var err: Error?
+                Task {
+                    do {
+                        let d = try await AVURLAsset(url: source).load(.duration)
+                        try await ClipConverter.convert(source, range: CMTimeRange(start: .zero, duration: d), format: format,
+                                                        quality: q, to: dest) { _ in }
+                    } catch { err = error }
+                    sem.signal()
+                }
+                sem.wait()
+                if let err { print("FAIL convert \(format.label) q\(q): \(err)"); ok = false; continue }
+                print("convert \(format.label) q\(q) (\(ClipConverter.word(for: q))) → ", terminator: "")
+                if !inspect(dest, audioTracks: 1) { ok = false }
+                try? FileManager.default.removeItem(at: dest)
+            }
+        }
+        return ok
     }
 
     /// Cutting 1.2s–3.7s out of the 5s recording should give a 2.5s clip, without re-encoding.

@@ -23,6 +23,13 @@ struct ClipItem: Identifiable, Hashable {
     }
     var isVideo: Bool { kind != .screenshot }
 
+    /// "Replay 22.19.19", "Roblox 16.53.58 (trimmed)": the kind or app, and the time from the file name.
+    var displayName: String {
+        let base = url.deletingPathExtension().lastPathComponent
+        guard let r = base.range(of: " at ") else { return base }
+        return "\(kind == .screenshot ? (appName ?? "Screenshot") : title) \(base[r.upperBound...])"
+    }
+
     var title: String {
         switch kind {
         case .replay: "Replay"
@@ -59,6 +66,8 @@ final class ClipLibrary: ObservableObject {
     @Published private(set) var thumbs: [URL: NSImage] = [:]
     @Published private(set) var durations: [URL: Double] = [:]
     @Published private(set) var sizes: [URL: CGSize] = [:]
+    /// "H.264", "HEVC", "PNG"…
+    @Published private(set) var codecs: [URL: String] = [:]
     private var scan: Task<Void, Never>?
     private var loaded: [URL: Date] = [:] // file date the metadata was loaded for
 
@@ -107,6 +116,9 @@ final class ClipLibrary: ObservableObject {
                let (size, transform) = try? await track.load(.naturalSize, .preferredTransform) {
                 let r = CGRect(origin: .zero, size: size).applying(transform)
                 sizes[url] = CGSize(width: abs(r.width), height: abs(r.height))
+                if let format = try? await track.load(.formatDescriptions).first {
+                    codecs[url] = Self.codecName(CMFormatDescriptionGetMediaSubType(format))
+                }
             }
             let gen = AVAssetImageGenerator(asset: asset)
             gen.appliesPreferredTrackTransform = true
@@ -120,8 +132,34 @@ final class ClipLibrary: ObservableObject {
             let (image, size) = await Task.detached(priority: .userInitiated) { ClipLibrary.imageThumb(url) }.value
             if let image { thumbs[url] = NSImage(cgImage: image, size: .zero) }
             if let size { sizes[url] = size }
+            codecs[url] = url.pathExtension.uppercased()
         }
         loaded[url] = item.date
+    }
+
+    nonisolated static func codecName(_ type: FourCharCode) -> String {
+        switch type {
+        case kCMVideoCodecType_H264: return "H.264"
+        case kCMVideoCodecType_HEVC, kCMVideoCodecType_HEVCWithAlpha: return "HEVC"
+        case kCMVideoCodecType_AV1: return "AV1"
+        case kCMVideoCodecType_AppleProRes422, kCMVideoCodecType_AppleProRes4444, kCMVideoCodecType_AppleProRes422HQ,
+             kCMVideoCodecType_AppleProRes422LT, kCMVideoCodecType_AppleProRes422Proxy: return "ProRes"
+        default:
+            let s = String(bytes: [24, 16, 8, 0].map { UInt8((type >> $0) & 0xFF) }, encoding: .ascii) ?? "?"
+            return s.trimmingCharacters(in: .whitespaces).uppercased()
+        }
+    }
+
+    /// "4m ago · 0:08 · 1600×1000 · HEVC · 11.3 MB": what's known about a clip so far.
+    func details(_ item: ClipItem, ago: Bool = true) -> String {
+        var parts = ago ? [timeAgo(item.date)] : []
+        if let d = durations[item.url] { parts.append(formatDuration(d)) }
+        if let s = sizes[item.url] { parts.append("\(Int(s.width))×\(Int(s.height))") }
+        if let c = codecs[item.url] { parts.append(c) }
+        if let bytes = (try? item.url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
+            parts.append(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))
+        }
+        return parts.joined(separator: " · ")
     }
 
     nonisolated private static func imageThumb(_ url: URL) -> (CGImage?, CGSize?) {
@@ -156,6 +194,15 @@ final class ClipPreview: ObservableObject {
     @Published private(set) var item: ClipItem?
     @Published private(set) var isTrimming = false
     @Published private(set) var isSavingTrim = false
+    /// Trim's "Save as": Original (no re-encode) or a new encode, and its quality 0–100. Remembered between uses.
+    @Published var exportFormat: ExportFormat = ExportFormat(rawValue: UserDefaults.standard.string(forKey: "exportFormat") ?? "") ?? .original {
+        didSet { UserDefaults.standard.set(exportFormat.rawValue, forKey: "exportFormat") }
+    }
+    @Published var exportQuality: Int = UserDefaults.standard.object(forKey: "exportQuality") as? Int ?? 65 {
+        didSet { UserDefaults.standard.set(exportQuality, forKey: "exportQuality") }
+    }
+    /// 0…1 while converting, nil otherwise.
+    @Published private(set) var convertProgress: Double?
     let player = AVPlayer()
     weak var playerView: AVPlayerView?
 
@@ -181,6 +228,13 @@ final class ClipPreview: ObservableObject {
         player.pause()
         player.replaceCurrentItem(with: nil)
         item = nil
+    }
+
+    /// Loads the newest clip, paused, when nothing is selected or the selection was removed.
+    func selectNewestIfNeeded() {
+        let items = ClipLibrary.shared.items
+        if let item, items.contains(item) { return }
+        if let first = items.first { open(first, play: false) } else { close() }
     }
 
     func togglePlay() {
@@ -223,6 +277,8 @@ final class ClipPreview: ObservableObject {
     }
 
     private func saveTrim(_ source: ClipItem, range: CMTimeRange) {
+        let format = exportFormat
+        if format != .original { convert(source, range: range, format: format); return }
         isSavingTrim = true
         let dest = ClipTrimmer.outputURL(for: source.url)
         Task {
@@ -243,15 +299,15 @@ final class ClipPreview: ObservableObject {
 
 /// Cuts a time range out of a clip without re-encoding (like ffmpeg's -c copy).
 enum ClipTrimmer {
-    /// "Replay … (trimmed).mp4", or "(trimmed 2)" etc. if that exists.
-    static func outputURL(for source: URL) -> URL {
+    /// "Replay … (trimmed).mp4", "(HEVC)", "(trimmed, H.264)", or with " 2" etc. if that exists.
+    static func outputURL(for source: URL, label: String = "trimmed") -> URL {
         let dir = source.deletingLastPathComponent()
         let ext = source.pathExtension.isEmpty ? "mp4" : source.pathExtension
         let base = source.deletingPathExtension().lastPathComponent
-        var url = dir.appendingPathComponent("\(base) (trimmed).\(ext)")
+        var url = dir.appendingPathComponent("\(base) (\(label)).\(ext)")
         var n = 2
         while FileManager.default.fileExists(atPath: url.path) {
-            url = dir.appendingPathComponent("\(base) (trimmed \(n)).\(ext)"); n += 1
+            url = dir.appendingPathComponent("\(base) (\(label) \(n)).\(ext)"); n += 1
         }
         return url
     }
@@ -268,6 +324,38 @@ enum ClipTrimmer {
         defer { try? FileManager.default.removeItem(at: tmp) }
         try await export.export(to: tmp, as: dest.pathExtension.lowercased() == "mov" ? .mov : .mp4)
         try FileManager.default.moveItem(at: tmp, to: dest)
+    }
+}
+
+extension ClipPreview {
+    /// Re-encodes the trimmed range (or the whole clip, if the handles weren't moved) into a new file.
+    fileprivate func convert(_ source: ClipItem, range: CMTimeRange, format: ExportFormat) {
+        isSavingTrim = true
+        convertProgress = 0
+        let quality = exportQuality
+        Task {
+            let duration = (try? await AVURLAsset(url: source.url).load(.duration).seconds) ?? range.duration.seconds
+            let whole = range.start.seconds < 0.05 && range.end.seconds > duration - 0.05
+            let dest = ClipTrimmer.outputURL(for: source.url, label: whole ? format.label : "trimmed, \(format.label)")
+            do {
+                try await ClipConverter.convert(source.url, range: range, format: format, quality: quality, to: dest) { p in
+                    ClipPreview.shared.convertProgress = p
+                }
+                isSavingTrim = false
+                convertProgress = nil
+                ClipLibrary.shared.refresh()
+                if self.item == source { open(url: dest) }
+                let size = { (u: URL) in Int64((try? u.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) }
+                let fmt = { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+                Toast.show("Saved as \(format.label)",
+                           "\(fmt(size(dest))) (was \(fmt(size(source.url)))) · \(dest.lastPathComponent)",
+                           icon: "arrow.triangle.2.circlepath", tint: Theme.accent) { OverlayController.shared.show(preview: dest) }
+            } catch {
+                isSavingTrim = false
+                convertProgress = nil
+                Toast.error("Couldn't convert the clip", error)
+            }
+        }
     }
 }
 
@@ -307,7 +395,7 @@ struct ClipPane: View {
                     Image(systemName: item.icon).foregroundStyle(item.tint).font(Theme.font(13, .semibold))
                     VStack(alignment: .leading, spacing: 0) {
                         Text(item.title).font(Theme.font(13, .semibold)).lineLimit(1)
-                        Text(details(item)).font(Theme.font(10.5)).foregroundStyle(Theme.muted).lineLimit(1)
+                        Text(lib.details(item)).font(Theme.font(10.5)).foregroundStyle(Theme.muted).lineLimit(1)
                     }
                 } else {
                     Text("Recent clips").font(Theme.font(13, .semibold))
@@ -345,13 +433,14 @@ struct ClipPane: View {
             .clipShape(RoundedRectangle(cornerRadius: Theme.s(12), style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: Theme.s(12), style: .continuous).strokeBorder(Theme.line))
 
-            HStack {
-                Text(item?.isVideo == true
-                     ? (preview.isTrimming ? "Drag the yellow handles, then click Trim. The original is kept."
-                                           : "Space to play or pause · ← → to step a frame")
-                     : " ")
-                    .font(Theme.font(10)).foregroundStyle(Theme.muted).lineLimit(1)
-                Spacer()
+            if item?.isVideo == true, preview.isTrimming || preview.convertProgress != nil {
+                SaveAsRow()
+            } else {
+                HStack {
+                    Text(item?.isVideo == true ? "Space to play or pause · ← → to step a frame" : " ")
+                        .font(Theme.font(10)).foregroundStyle(Theme.muted).lineLimit(1)
+                    Spacer()
+                }
             }
 
             if !lib.items.isEmpty {
@@ -363,14 +452,8 @@ struct ClipPane: View {
                 .frame(width: width, alignment: .leading)
             }
         }
-        .onAppear(perform: selectNewestIfNeeded)
-        .onChange(of: lib.items) { selectNewestIfNeeded() }
-    }
-
-    /// Loads the newest clip, paused, when nothing is selected or the selection was removed.
-    private func selectNewestIfNeeded() {
-        if let item = preview.item, lib.items.contains(item) { return }
-        if let first = lib.items.first { preview.open(first, play: false) } else { preview.close() }
+        .onAppear(perform: preview.selectNewestIfNeeded)
+        .onChange(of: lib.items) { preview.selectNewestIfNeeded() }
     }
 
     /// Height for the pane's fixed width, following the clip's aspect ratio within a sane range.
@@ -380,16 +463,6 @@ struct ClipPane: View {
         // Room left after the rest of the layout, the pane's header, hint line and thumbnails.
         let room = screen.height - reservedHeight - Theme.s(150) - thumbW * 9 / 16
         return max(min(max(width / aspect, width * 9 / 21), width * 3 / 4, room), Theme.s(140))
-    }
-
-    private func details(_ item: ClipItem) -> String {
-        var parts = [timeAgo(item.date)]
-        if let d = lib.durations[item.url] { parts.append(formatDuration(d)) }
-        if let s = lib.sizes[item.url] { parts.append("\(Int(s.width))×\(Int(s.height))") }
-        if let bytes = (try? item.url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
-            parts.append(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))
-        }
-        return parts.joined(separator: " · ")
     }
 }
 
@@ -447,7 +520,73 @@ private struct ClipThumb: View {
     }
 }
 
-private struct PlayerView: NSViewRepresentable {
+/// Under the player while trimming: what to save the trimmed part as, and how hard to compress it.
+struct SaveAsRow: View {
+    @ObservedObject private var preview = ClipPreview.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.s(6)) {
+            if let p = preview.convertProgress {
+                HStack(spacing: Theme.s(8)) {
+                    ProgressView(value: p).tint(Theme.accent).frame(maxWidth: .infinity)
+                    Text("Converting to \(preview.exportFormat.label)… \(Int(p * 100))%")
+                        .font(Theme.font(10.5)).foregroundStyle(.secondary).monospacedDigit()
+                }
+            } else {
+                // One line when there's room; in narrow layouts the slider drops to its own line.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Theme.s(8)) {
+                        formats
+                        quality
+                        Spacer(minLength: 0)
+                    }
+                    VStack(alignment: .leading, spacing: Theme.s(6)) {
+                        HStack(spacing: Theme.s(8)) { formats; Spacer(minLength: 0) }
+                        HStack(spacing: Theme.s(8)) { quality }
+                    }
+                }
+                Text(preview.exportFormat == .original
+                     ? "Drag the yellow handles, then click Trim. Saves without re-encoding; the original is kept."
+                     : "Drag the handles (or leave them at the ends for the whole clip), then click Trim. Re-encodes into a new file; the original is kept.")
+                    .font(Theme.font(9.5)).foregroundStyle(.secondary).lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var formats: some View {
+        HStack(spacing: Theme.s(8)) {
+            Text("Save as").font(Theme.font(10.5, .semibold)).foregroundStyle(.secondary).fixedSize()
+            HStack(spacing: Theme.s(3)) {
+                ForEach(ExportFormat.allCases) { f in formatButton(f) }
+            }
+        }
+    }
+
+    @ViewBuilder private var quality: some View {
+        if preview.exportFormat != .original {
+            Slider(value: Binding(get: { Double(preview.exportQuality) },
+                                  set: { preview.exportQuality = Int($0.rounded()) }), in: 0...100)
+                .tint(Theme.accent).controlSize(.small).frame(minWidth: Theme.s(90))
+            Text(ClipConverter.word(for: preview.exportQuality))
+                .font(Theme.font(10.5, .semibold)).lineLimit(1).fixedSize()
+        }
+    }
+
+    private func formatButton(_ f: ExportFormat) -> some View {
+        let on = preview.exportFormat == f
+        return Button { preview.exportFormat = f } label: {
+            Text(f.label).font(Theme.font(10, .semibold)).lineLimit(1).fixedSize()
+                .padding(.horizontal, Theme.s(7)).padding(.vertical, Theme.s(3))
+                .background(Capsule().fill(on ? Theme.accent.opacity(0.3) : Color.primary.opacity(0.08)))
+                .overlay(Capsule().strokeBorder(on ? Theme.accent : .clear))
+        }
+        .buttonStyle(.plain)
+        .help(f == .original ? "Keep the original video, no re-encoding" : "Re-encode as \(f.label)")
+    }
+}
+
+struct PlayerView: NSViewRepresentable {
     let player: AVPlayer
 
     func makeNSView(context: Context) -> AVPlayerView {
