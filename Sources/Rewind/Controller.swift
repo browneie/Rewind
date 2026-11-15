@@ -13,6 +13,8 @@ final class Controller: ObservableObject {
     @Published private(set) var recordingStart: Date?
     @Published private(set) var isCapturing = false
     @Published private(set) var captureInfo = ""
+    /// Replays and recordings still being written or mixed (the uninstaller waits for these).
+    private(set) var savesInFlight = 0
 
     let settings = Settings.shared
     let router = MediaRouter()
@@ -106,8 +108,10 @@ final class Controller: ObservableObject {
         }
         guard let url = makeOutputURL(prefix: namePrefix("Replay"), ext: "mp4") else { return }
         let mix = settings.mixMicrophone
+        savesInFlight += 1
         ClipWriter.write(snap, to: url) { result in
             Task { @MainActor in
+                defer { Controller.shared.savesInFlight -= 1 }
                 switch result {
                 case .success(let length):
                     await Controller.mixDown(url, enabled: mix)
@@ -148,8 +152,10 @@ final class Controller: ObservableObject {
         recording = false
         recordingStart = nil
         let mix = settings.mixMicrophone
+        savesInFlight += 1
         rec.finish { result in
             Task { @MainActor in
+                defer { Controller.shared.savesInFlight -= 1 }
                 switch result {
                 case .success(let length):
                     await Controller.mixDown(rec.url, enabled: mix)

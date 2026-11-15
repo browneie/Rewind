@@ -6,17 +6,49 @@ import SwiftUI
 enum Toast {
     private static var panel: NSPanel?
     private static var hideWork: DispatchWorkItem?
+    /// While held (the launch update check) or while a pinned notice is up (the update offer), other notices
+    /// wait; the most recent one shows once the way is clear.
+    private static var held = false
+    private static var pinnedUp = false
+    private static var waiting: (() -> Void)?
+
+    /// Keeps other notices back until `release()` or `seconds` pass, whichever comes first.
+    static func hold(upTo seconds: Double) {
+        held = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { release() }
+    }
+
+    static func release() {
+        guard held else { return }
+        held = false
+        showWaiting()
+    }
+
+    private static func showWaiting() {
+        guard !held, !pinnedUp, let next = waiting else { return }
+        waiting = nil
+        next()
+    }
 
     static func error(_ title: String, _ error: Error) {
         show(title, error.localizedDescription, icon: "xmark.octagon.fill", tint: .red, duration: 6)
     }
 
+    /// `closable` adds an ✕ that dismisses the notice without running `onClick`.
+    /// `pinned` notices can't be replaced: others wait until it's clicked, closed or times out.
     static func show(_ title: String, _ subtitle: String?, icon: String, tint: Color,
-                     duration: Double = 3.5, onClick: (() -> Void)? = nil) {
+                     duration: Double = 3.5, closable: Bool = false, pinned: Bool = false,
+                     onClick: (() -> Void)? = nil) {
+        if !pinned, held || pinnedUp {
+            waiting = { show(title, subtitle, icon: icon, tint: tint, duration: duration, closable: closable, onClick: onClick) }
+            return
+        }
+        pinnedUp = pinned
         hideWork?.cancel()
         panel?.orderOut(nil)
 
-        let view = ToastView(title: title, subtitle: subtitle, icon: icon, tint: tint, clickable: onClick != nil) {
+        let view = ToastView(title: title, subtitle: subtitle, icon: icon, tint: tint, clickable: onClick != nil,
+                             closable: closable, close: { dismiss() }) {
             onClick?()
             dismiss()
         }
@@ -47,8 +79,14 @@ enum Toast {
     private static func dismiss() {
         guard let p = panel else { return }
         panel = nil
-        NSAnimationContext.runAnimationGroup({ $0.duration = 0.25; p.animator().alphaValue = 0 }) {
+        let wasPinned = pinnedUp
+        pinnedUp = false
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.25; p.animator().alphaValue = 0 }
+        // A timer, not the animation's completion: animations pause while the Mac is locked or asleep,
+        // which would leave the panel up and any waiting notice stuck.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             p.orderOut(nil)
+            if wasPinned { showWaiting() }
         }
     }
 }
@@ -59,6 +97,8 @@ private struct ToastView: View {
     let icon: String
     let tint: Color
     let clickable: Bool
+    var closable = false
+    var close: () -> Void = {}
     let action: () -> Void
 
     var body: some View {
@@ -75,7 +115,15 @@ private struct ToastView: View {
                 }
             }
             Spacer(minLength: 0)
-            if clickable {
+            if closable {
+                Button(action: close) {
+                    Image(systemName: "xmark").font(.system(size: Theme.s(10), weight: .heavy))
+                        .frame(width: Theme.s(22), height: Theme.s(22))
+                        .background(Circle().fill(Color.white.opacity(0.1)))
+                }
+                .buttonStyle(.plain)
+                .help("Not now")
+            } else if clickable {
                 Image(systemName: "chevron.right").font(.system(size: Theme.s(11), weight: .bold)).foregroundStyle(.tertiary)
             }
         }
