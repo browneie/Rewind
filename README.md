@@ -4,6 +4,8 @@
 
 A ShadowPlay-style screen recorder for macOS. Rewind keeps the last few minutes of your screen in memory, so you can save a clip *after* something happens. It also does regular recordings and screenshots, all from an in-game overlay.
 
+**On Windows?** There's a native Windows port in [`windows/`](windows/README.md).
+
 ![Rewind overlay over a game](docs/overlay.png)
 
 ## Features

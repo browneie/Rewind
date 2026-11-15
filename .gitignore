@@ -4,3 +4,20 @@ dist/
 .DS_Store
 .swiftpm/
 *.xcodeproj/
+Thumbs.db
+desktop.ini
+
+# Local-only files
+.vs/
+.vscode/
+.idea/
+*.log
+*.tmp
+.env
+.env.*
+
+# Handover / session notes (never committed)
+HANDOVER*
+HANDOFF*
+*handover*
+*handoff*
