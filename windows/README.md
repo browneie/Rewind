@@ -18,7 +18,7 @@ The Windows port of [Rewind](../README.md), the ShadowPlay-style screen recorder
 - **Audio.** System audio and/or microphone. By default your mic is mixed into the main track so clips play correctly everywhere; turn that off to keep them as separate tracks for editing.
 - **Auto-cleanup** (optional, off by default). Moves clips and screenshots older than a set number of days (14 by default) to the Recycle Bin. Only Rewind's own files are touched.
 - **Preview, trim and convert clips in the overlay.** Your newest clip is loaded in the overlay's player as soon as it opens, with your latest clips and screenshots beside it. Click one to play it right in the overlay (Space plays or pauses, ← → step a frame), trim it, show it in Explorer, or move it to the Recycle Bin. Trim's **Save as** row keeps the original video (cut without re-encoding, so it's instant) or converts the part you keep to H.264, HEVC or AV1 (on graphics cards that can encode it), with a quality slider from "much smaller file" to "original". Leave the handles at the ends to convert the whole clip. Converting runs on the graphics card, and the original is always kept.
-- **In-game overlay** (Alt+Z) with four layouts: **Classic** (ShadowPlay-style tiles with the Gallery or Settings underneath), **Split** (actions beside a player showing your newest clip), **Console** (one solid panel: actions and capture info on the left, the clip and a filmstrip on the right) and **Sidebar** (a full-height panel that slides in from the right). Every layout comes in light or dark, or follows Windows' own light/dark setting (Settings → Overlay → Appearance), and cross-fades when you switch. Settings open inside the overlay too, in five categories (Recording, Replay, Overlay, Hotkeys, General). Pick the accent color from presets or the color wheel in Settings → Overlay. Works over borderless/windowed fullscreen games, and frees the mouse pointer that games hide and lock. Rewind's overlay and windows are hidden from screen capture, so they never appear in your clips or in screen shares, and recording carries on while the overlay is open.
+- **In-game overlay** (Alt+Z) with four layouts: **Classic** (ShadowPlay-style tiles with the Gallery or Settings underneath), **Split** (actions beside a player showing your newest clip), **Console** (one solid panel: actions and capture info on the left, the clip and a filmstrip on the right) and **Sidebar** (a full-height panel that slides in from the right). Every layout comes in light or dark, or follows Windows' own light/dark setting (Settings → Overlay → Appearance), and cross-fades when you switch. Settings open inside the overlay too, in five categories (Recording, Replay, Overlay, Hotkeys, General). Pick the accent color from presets or the color wheel in Settings → Overlay. Works over borderless/windowed fullscreen games, and frees the mouse pointer that games hide and lock. Friends watching your Discord or OBS screen share can see it, but it never appears in your own clips.
 - **Global hotkeys** that work while a game has focus, and can be changed in Settings.
 
 <p>
@@ -79,9 +79,9 @@ A recording in progress is saved first. Other portable copies of Rewind elsewher
 
 <img src="docs/settings.png" width="420" alt="Settings window">
 
-Choose what to capture (any connected display, or one app), resolution, frame rate (pick one or type any from 1 to 360 fps; Settings warns when it's above the screen's refresh rate), quality (or a custom bitrate from 1 to 150 Mbps), codec, replay length, audio sources and whether to mix the mic in, save folder, auto-cleanup of old clips, the overlay's layout, accent color, dimming, player size and hotkey hints, hotkeys, whether screen shares can see the overlay and Settings, whether Rewind opens when Windows starts, and whether it checks for updates. The Settings window shows how much RAM the replay buffer will use.
+Choose what to capture (any connected display, or one app), resolution, frame rate (pick one or type any from 1 to 360 fps; Settings warns when it's above the screen's refresh rate), quality (or a custom bitrate from 1 to 150 Mbps), codec, replay length, audio sources and whether to mix the mic in, save folder, auto-cleanup of old clips, the overlay's layout, accent color, dimming, player size and hotkey hints, hotkeys, whether Rewind opens when Windows starts, and whether it checks for updates. The Settings window shows how much RAM the replay buffer will use.
 
-Rewind's overlay, Settings and notifications are hidden from every screen capture (its own recordings, Discord, OBS, Teams), so recording keeps going underneath the overlay.
+While the overlay is open over a whole-display capture, Rewind's own video holds its last frame (sound keeps recording), so the overlay stays out of your clips.
 
 Settings are stored in `%APPDATA%\Rewind\settings.json`. A diagnostics log is kept in `%LOCALAPPDATA%\Rewind\rewind.log`.
 
@@ -126,7 +126,6 @@ To redraw the Windows icon from [`docs/icon.png`](../docs/icon.png):
 | `--quality-test [dir]` | Encodes the same synthetic game and desktop footage with different encoder settings and reports size against quality (PSNR, SSIM, worst frame). |
 | `--inspect <file>` | Shows what Windows' media stack sees in a clip: tracks, decoded frames, durations. |
 | `--settings`, `--overlay`, `--demo-toast` | Open those at launch, like the macOS app's flags. |
-| `--capturable` | Don't hide Rewind's own windows from capture (for screenshots of the UI). |
 
 ### Changing the look
 
@@ -138,7 +137,7 @@ The files mirror `Sources/Rewind/` one to one, so a change on one side is easy t
 
 | macOS | Windows | File |
 |---|---|---|
-| ScreenCaptureKit | Desktop Duplication for displays and fullscreen apps (with the mouse pointer drawn in by Rewind), Windows.Graphics.Capture for app windows, `SetWindowDisplayAffinity` to hide Rewind's own windows | `CaptureEngine.cs`, `Duplication.cs`, `Gpu.cs` |
+| ScreenCaptureKit | Desktop Duplication for displays and fullscreen apps (with the mouse pointer drawn in by Rewind), Windows.Graphics.Capture for app windows | `CaptureEngine.cs`, `Duplication.cs`, `Gpu.cs` |
 | VideoToolbox (Apple media engine) | Media Foundation hardware encoder MFT, fed NV12 surfaces converted on the GPU by the D3D11 video processor | `VideoEncoder.cs`, `Gpu.cs` |
 | ScreenCaptureKit audio | WASAPI loopback, microphone, and per-process loopback for "capture one app" | `AudioCapture.cs` |
 | AVAssetWriter | A small built-in MP4 muxer (H.264/HEVC/AV1 passed through, AAC from Media Foundation's encoder) | `Mp4Muxer.cs`, `Writers.cs` |

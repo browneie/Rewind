@@ -109,7 +109,6 @@ static class Native
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] public static extern IntPtr SetWindowLongPtr(IntPtr hwnd, int index, IntPtr value);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
-    [DllImport("user32.dll")] public static extern bool SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool RegisterHotKey(IntPtr hwnd, int id, uint mods, uint vk);
@@ -175,15 +174,8 @@ static class Native
     public static readonly IntPtr HWND_TOPMOST = new(-1);
     public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9, DWMWA_CLOAKED = 14, DWMWA_WINDOW_CORNER_PREFERENCE = 33;
     public const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
-    public const uint WDA_NONE = 0, WDA_EXCLUDEFROMCAPTURE = 0x11;
     public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
     public const int WM_HOTKEY = 0x0312;
-
-    public static void ExcludeFromCapture(IntPtr hwnd, bool exclude = true)
-    {
-        if (hwnd == IntPtr.Zero) return;
-        SetWindowDisplayAffinity(hwnd, exclude && !App.CapturableWindows ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE);
-    }
 
     public static void MakeToolWindow(IntPtr hwnd, bool noActivate)
     {

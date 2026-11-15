@@ -10,12 +10,10 @@ namespace Rewind;
 
 static class App
 {
-    public static bool CapturableWindows { get; private set; }
     static Tray? tray;
 
     public static int Run(string[] args)
     {
-        CapturableWindows = args.Contains("--capturable");
         Forms.Application.EnableVisualStyles();
         Forms.Application.SetColorMode(Forms.SystemColorMode.System);
         MF.Startup();

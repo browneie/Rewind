@@ -123,9 +123,6 @@ sealed class SettingsWindow : Window
         content = new SettingsContent(SettingsPages.All, inOverlay: false) { Margin = new Thickness(20, 12, 20, 24) };
         Content = new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
 
-        void Exclude() => Native.ExcludeFromCapture(new WindowInteropHelper(this).Handle);
-        SourceInitialized += (_, _) => Exclude();
-
         Deactivated += (_, _) => content.CancelRecording();
 
     }

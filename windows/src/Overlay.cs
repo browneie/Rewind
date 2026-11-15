@@ -34,7 +34,7 @@ static class OverlayController
             then(window);
             return;
         }
-        // The overlay is hidden from screen capture, so the controller just needs to know it's open.
+        // A whole-display capture would record the overlay, so the video holds while it's open.
         Controller.Shared.OverlayChanged(true);
         var w = window = new OverlayWindow(Hide);
         w.Closed += (_, _) =>
@@ -126,7 +126,6 @@ sealed class OverlayWindow : Window
         {
             var hwnd = new WindowInteropHelper(this).Handle;
             Native.MakeToolWindow(hwnd, noActivate: false);
-            Native.ExcludeFromCapture(hwnd);
             PlaceOnScreen();
         };
         DpiChanged += (_, _) => PlaceOnScreen();

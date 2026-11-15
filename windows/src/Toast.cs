@@ -102,7 +102,6 @@ static class Toast
             {
                 var hwnd = new WindowInteropHelper(this).Handle;
                 Native.MakeToolWindow(hwnd, noActivate: true);
-                Native.ExcludeFromCapture(hwnd);
             };
             SizeChanged += (_, _) => Place();
             DpiChanged += (_, _) => Place();
