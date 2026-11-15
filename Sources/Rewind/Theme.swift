@@ -72,20 +72,45 @@ extension Color {
 /// Overlay layouts, chosen in Settings → Overlay.
 /// The raw values are what's saved; "panes" is kept for Split so existing settings carry over.
 enum OverlayLayout: String, CaseIterable, Identifiable {
-    case classic, tiles, panes
+    case classic, panes, console, sidebar
     var id: String { rawValue }
     var name: String {
         switch self {
         case .classic: "Classic"
-        case .tiles: "Tiles"
         case .panes: "Split"
+        case .console: "Console"
+        case .sidebar: "Sidebar"
         }
     }
     var label: String {
         switch self {
         case .classic: "Classic (ShadowPlay-style)"
-        case .tiles: "Tiles (big buttons, clips below)"
         case .panes: "Split (actions beside a player)"
+        case .console: "Console (one solid panel)"
+        case .sidebar: "Sidebar (slides in from the right)"
+        }
+    }
+    /// The layout a saved value stands for; the old Tiles layout became Console.
+    static func saved(_ raw: String) -> OverlayLayout? { raw == "tiles" ? .console : OverlayLayout(rawValue: raw) }
+}
+
+/// Light or dark for the Sidebar layout.
+enum OverlayAppearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .system: "Match system"
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+    /// The scheme to draw with right now.
+    @MainActor var colorScheme: ColorScheme {
+        switch self {
+        case .light: .light
+        case .dark: .dark
+        case .system: NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light
         }
     }
 }

@@ -223,7 +223,7 @@ final class Settings: ObservableObject {
         static let appPrefixes = "appPrefixes"
         static let playerSize = "playerSize", customMbps = "customMbps"
         static let autoUpdate = "checkForUpdates", customFps = "customFps"
-        static let layout = "overlayLayout", accent = "accentColor", dim = "overlayDim", showHotkeys = "showHotkeys"
+        static let layout = "overlayLayout", appearance = "overlayAppearance", accent = "accentColor", dim = "overlayDim", showHotkeys = "showHotkeys"
     }
 
     @Published var displayID: UInt32 { didSet { d.set(Int(displayID), forKey: K.display) } }
@@ -249,6 +249,8 @@ final class Settings: ObservableObject {
     /// App names used to name clips ("Roblox"), so cleanup and Recent clips still recognise those files.
     @Published private(set) var appPrefixes: [String] { didSet { d.set(appPrefixes, forKey: K.appPrefixes) } }
     @Published var overlayLayout: OverlayLayout { didSet { d.set(overlayLayout.rawValue, forKey: K.layout) } }
+    /// Light, dark or the system's, for the Sidebar layout.
+    @Published var overlayAppearance: OverlayAppearance { didSet { d.set(overlayAppearance.rawValue, forKey: K.appearance) } }
     @Published var accentHex: UInt32 { didSet { d.set(Int(accentHex), forKey: K.accent) } }
     @Published var overlayDim: Double { didSet { d.set(overlayDim, forKey: K.dim) } }
     @Published var showHotkeys: Bool { didSet { d.set(showHotkeys, forKey: K.showHotkeys) } }
@@ -291,7 +293,8 @@ final class Settings: ObservableObject {
         autoCleanup = d.bool(forKey: K.cleanup)
         cleanupDays = max(1, d.integer(forKey: K.cleanupDays))
         appPrefixes = d.stringArray(forKey: K.appPrefixes) ?? []
-        overlayLayout = OverlayLayout(rawValue: d.string(forKey: K.layout) ?? "") ?? .panes
+        overlayLayout = OverlayLayout.saved(d.string(forKey: K.layout) ?? "") ?? .panes
+        overlayAppearance = OverlayAppearance(rawValue: d.string(forKey: K.appearance) ?? "") ?? .system
         accentHex = UInt32(clamping: d.integer(forKey: K.accent)) & 0xFFFFFF
         overlayDim = min(max(d.double(forKey: K.dim), 0), 0.9)
         showHotkeys = d.bool(forKey: K.showHotkeys)

@@ -47,7 +47,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                            icon: "checkmark.circle.fill", tint: Theme.replay, duration: 30)
             }
         }
-        if CommandLine.arguments.contains("--settings") { SettingsWindow.shared.show() }
+        if CommandLine.arguments.contains("--settings") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { OverlayController.shared.showSettings() }
+        }
         if CommandLine.arguments.contains("--overlay") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { OverlayController.shared.show() }
         }
@@ -72,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if reportConflicts, !failed.isEmpty {
             Toast.show("Some hotkeys are taken", failed.map(\.display).joined(separator: ", ")
                        + " is already used by another app. Change it in Settings.",
-                       icon: "keyboard", tint: .orange, duration: 6) { SettingsWindow.shared.show() }
+                       icon: "keyboard", tint: .orange, duration: 6) { OverlayController.shared.showSettings(.hotkeys) }
         }
     }
 
@@ -142,6 +144,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func screenshot() { controller.screenshot() }
     @objc private func showOverlay() { OverlayController.shared.show() }
     @objc private func openFolder() { controller.openClipsFolder() }
-    @objc private func openSettings() { SettingsWindow.shared.show() }
+    @objc private func openSettings() { OverlayController.shared.showSettings() }
     @objc private func quit() { NSApp.terminate(nil) }
 }

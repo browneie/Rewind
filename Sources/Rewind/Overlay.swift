@@ -7,6 +7,18 @@ private final class OverlayPanel: NSPanel {
     override func cancelOperation(_ sender: Any?) { onCancel?() }
 }
 
+/// Whether the overlay is opening or closing, for layouts that animate in and out (Sidebar).
+@MainActor
+final class OverlayState: ObservableObject {
+    static let shared = OverlayState()
+    @Published var open = false
+    /// The settings page showing, or nil for the clips.
+    @Published var settings: SettingsPage?
+    /// A hotkey field is listening, so the overlay leaves keys (Esc) alone.
+    var capturingKeys = false
+    static let slide = Animation.easeInOut(duration: 0.3)
+}
+
 /// Fullscreen in-game style overlay (default ⌥Z).
 @MainActor
 final class OverlayController {
@@ -17,9 +29,15 @@ final class OverlayController {
     var isVisible: Bool { panel != nil }
     func toggle() { isVisible ? hide() : show() }
 
+    /// Opens the overlay on a settings page (or switches to it when the overlay is already up).
+    func showSettings(_ page: SettingsPage = .video) {
+        OverlayState.shared.settings = page
+        show()
+    }
+
     /// Shows the overlay; with a URL, opens straight into the preview of that clip.
     func show(preview url: URL? = nil) {
-        if let url { ClipPreview.shared.open(url: url) }
+        if let url { ClipPreview.shared.open(url: url); OverlayState.shared.settings = nil }
         ClipLibrary.shared.refresh()
         guard panel == nil else { return }
         let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main!
@@ -31,14 +49,21 @@ final class OverlayController {
         p.level = .screenSaver
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         p.onCancel = { [weak self] in self?.hide() }
+        OverlayState.shared.open = false
         p.contentView = NSHostingView(rootView: OverlayView(close: { [weak self] in self?.hide() }))
         p.setFrame(screen.frame, display: true)
         p.alphaValue = 0
         p.makeKeyAndOrderFront(nil)
         NSAnimationContext.runAnimationGroup { $0.duration = 0.12; p.animator().alphaValue = 1 }
         panel = p
+        DispatchQueue.main.async { withAnimation(OverlayState.slide) { OverlayState.shared.open = true } }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
-            let preview = ClipPreview.shared
+            let preview = ClipPreview.shared, state = OverlayState.shared
+            if state.capturingKeys { return e }
+            if state.settings != nil {
+                if e.keyCode == 53 { withAnimation(.easeOut(duration: 0.15)) { state.settings = nil }; return nil } // Esc: back to clips
+                return e
+            }
             if preview.isTrimming { return e } // the trim bar handles Return (Trim) and Esc (Cancel)
             if e.keyCode == 53 { self?.hide(); return nil } // Esc
             if preview.item?.isVideo == true, e.modifierFlags.intersection([.command, .control, .option]).isEmpty {
@@ -56,9 +81,14 @@ final class OverlayController {
     func hide() {
         guard let p = panel else { return }
         panel = nil
-        ClipPreview.shared.close()
         if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
-        NSAnimationContext.runAnimationGroup({ $0.duration = 0.12; p.animator().alphaValue = 0 }) { p.orderOut(nil) }
+        withAnimation(OverlayState.slide) { OverlayState.shared.open = false }
+        // Sidebar slides out first; the others just fade.
+        let slideOut = Settings.shared.overlayLayout == .sidebar ? 0.3 : 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + slideOut) { [weak self] in
+            if self?.panel == nil { ClipPreview.shared.close(); OverlayState.shared.settings = nil } // not if it was opened again meanwhile
+            NSAnimationContext.runAnimationGroup({ $0.duration = 0.12; p.animator().alphaValue = 0 }) { p.orderOut(nil) }
+        }
     }
 }
 
@@ -66,17 +96,28 @@ struct OverlayView: View {
     @ObservedObject private var c = Controller.shared
     @ObservedObject private var s = Settings.shared
     @ObservedObject private var preview = ClipPreview.shared
+    @ObservedObject private var state = OverlayState.shared
     let close: () -> Void
 
     @State private var gallery = false // Classic layout: clip pane shown under the bar
 
     var body: some View {
         ZStack(alignment: s.overlayLayout == .classic ? .top : .center) {
-            Color.black.opacity(Theme.dim).ignoresSafeArea().onTapGesture(perform: close)
-            switch s.overlayLayout {
-            case .classic: classic
-            case .tiles: tiles
-            case .panes: panes
+            Color.black.opacity(s.overlayLayout == .sidebar && !state.open ? 0 : Theme.dim)
+                .ignoresSafeArea().onTapGesture(perform: close)
+            let sheet = state.settings != nil && s.overlayLayout == .panes
+            Group {
+                switch s.overlayLayout {
+                case .classic: classic
+                case .panes: panes
+                case .console: ConsoleLayout(close: close)
+                case .sidebar: SidebarLayout(close: close)
+                }
+            }
+            .opacity(sheet ? 0 : 1).allowsHitTesting(!sheet) // the settings sheet replaces Split while it's up
+            if let page = state.settings, s.overlayLayout == .panes {
+                SettingsSheet(page: page, close: close)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .environment(\.colorScheme, .dark)
@@ -98,91 +139,6 @@ struct OverlayView: View {
                     .panelSurface(radius: Theme.s(Theme.radius * 0.7))
             }
             .fixedSize()
-    }
-
-    // MARK: Tiles
-
-    /// Width of the three tiles side by side.
-    private let tilesWidth = Theme.s(150 * 3 + 14 * 2)
-
-    /// The original layout: one panel with three big tiles, a player with your newest clip under them,
-    /// the recent clips row and a footer.
-    private var tiles: some View {
-        VStack(alignment: .leading, spacing: Theme.s(18)) {
-            TimelineView(.periodic(from: .now, by: 1)) { _ in
-                VStack(alignment: .leading, spacing: Theme.s(18)) {
-                    tilesHeader
-                    HStack(spacing: Theme.s(14)) {
-                        replayTile
-                        recordTile
-                        screenshotTile
-                    }
-                }
-            }
-            ClipPane(close: close, fixedWidth: tilesWidth, reservedHeight: Theme.s(420), showsClose: false)
-            tilesFooter
-        }
-        .padding(Theme.s(22))
-        .fixedSize()
-        .panelSurface(radius: Theme.s(Theme.radius))
-    }
-
-    private var tilesHeader: some View {
-        HStack(spacing: Theme.s(12)) {
-            HStack(spacing: Theme.s(9)) {
-                Image(systemName: "arrow.counterclockwise")
-                    .font(.system(size: Theme.s(13), weight: .heavy))
-                    .foregroundStyle(.black)
-                    .frame(width: Theme.s(26), height: Theme.s(26))
-                    .background(RoundedRectangle(cornerRadius: Theme.s(8), style: .continuous).fill(
-                        LinearGradient(colors: [Theme.accent, Theme.accent.mix(with: .black, by: 0.45)],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing)))
-                Text(Theme.brand).font(Theme.font(20, .bold))
-            }
-            if c.recording, let start = c.recordingStart {
-                RecPill(text: formatDuration(Date().timeIntervalSince(start)))
-            }
-            Spacer(minLength: Theme.s(20))
-            Text(c.isCapturing ? c.captureInfo : "Not capturing")
-                .font(Theme.font(12)).foregroundStyle(Theme.muted)
-            CircleButton(icon: "xmark", action: close).help("Close (Esc)")
-        }
-    }
-
-    private var replayTile: some View {
-        let on = c.replayActive
-        return IconTile(icon: ReplayIcon.name(seconds: s.replaySeconds), title: Theme.replayTitle, tint: Theme.replay,
-                        badge: on ? "ON" : nil,
-                        hint: on ? s.hotkey(.saveReplay) : s.hotkey(.toggleReplay),
-                        caption: on ? "Save last \(formatDuration(c.bufferedSeconds))" : "Click to turn on",
-                        hoverCaption: on ? "Right-click to turn off" : nil,
-                        progress: on ? c.bufferedSeconds / Double(max(s.replaySeconds, 1)) : nil,
-                        action: { on ? c.saveReplay() : c.startReplay() },
-                        rightAction: { c.toggleReplay() })
-    }
-
-    private var recordTile: some View {
-        let on = c.recording
-        return IconTile(icon: on ? "stop.fill" : "record.circle", title: Theme.recordTitle, tint: Theme.record,
-                        badge: on ? "REC" : nil, hint: s.hotkey(.toggleRecording),
-                        caption: on ? "Click to stop" : "Start recording",
-                        progress: nil, action: { c.toggleRecording() }, rightAction: { c.toggleRecording() })
-    }
-
-    private var screenshotTile: some View {
-        IconTile(icon: "camera", title: Theme.screenshotTitle, tint: Theme.screenshot, badge: nil,
-                 hint: s.hotkey(.screenshot), caption: "Full-res PNG", progress: nil,
-                 flashOnTap: true, action: { c.screenshot() }, rightAction: { c.screenshot() })
-    }
-
-    private var tilesFooter: some View {
-        HStack(spacing: Theme.s(8)) {
-            Chip(title: Theme.folderLabel, icon: "folder") { close(); c.openClipsFolder() }
-            Chip(title: Theme.settingsLabel, icon: "gearshape") { close(); SettingsWindow.shared.show() }
-            Spacer()
-            Text("Sound: \(s.systemAudio ? "system" : "off")\(s.microphone ? " + mic" : "")")
-                .font(Theme.font(12)).foregroundStyle(Theme.muted)
-        }
     }
 
     // MARK: Classic
@@ -226,14 +182,18 @@ struct OverlayView: View {
                         .classicPanel()
 
                         VStack(spacing: Theme.s(8)) {
-                            ClassicWide(icon: "film.stack", title: "Gallery", on: gallery) {
-                                withAnimation(.easeOut(duration: 0.15)) { gallery.toggle() }
+                            ClassicWide(icon: "film.stack", title: "Gallery", on: gallery && state.settings == nil) {
+                                withAnimation(.easeOut(duration: 0.15)) {
+                                    if state.settings != nil { state.settings = nil; gallery = true } else { gallery.toggle() }
+                                }
                             }
                             HStack(spacing: Theme.s(8)) {
                                 ClassicRound(icon: s.microphone ? "mic.fill" : "mic.slash.fill", on: s.microphone) { s.microphone.toggle() }
                                     .help(s.microphone ? "Microphone on (click to turn off)" : "Microphone off (click to turn on)")
                                 ClassicRound(icon: "folder.fill", on: false) { close(); c.openClipsFolder() }.help(Theme.folderLabel)
-                                ClassicRound(icon: "gearshape.fill", on: false) { close(); SettingsWindow.shared.show() }.help(Theme.settingsLabel)
+                                ClassicRound(icon: "gearshape.fill", on: state.settings != nil) {
+                                    withAnimation(.easeOut(duration: 0.15)) { state.settings = state.settings == nil ? .video : nil }
+                                }.help(Theme.settingsLabel)
                             }
                         }
                         .padding(Theme.s(10))
@@ -251,7 +211,10 @@ struct OverlayView: View {
                     .padding(.horizontal, Theme.s(10)).padding(.vertical, Theme.s(5))
                     .classicPanel()
 
-                    if gallery {
+                    if let page = state.settings {
+                        ClassicSettings(page: page)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    } else if gallery {
                         ClipPane(close: close, reservedHeight: Theme.s(300))
                             .padding(Theme.s(14))
                             .fixedSize()
@@ -259,7 +222,7 @@ struct OverlayView: View {
                             .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 }
-                .padding(.top, Theme.s(gallery ? 64 : 150))
+                .padding(.top, Theme.s(gallery || state.settings != nil ? 64 : 150))
             }
         }
     }
@@ -309,7 +272,7 @@ struct OverlayView: View {
                 .font(Theme.font(10.5)).foregroundStyle(Theme.muted)
             HStack(spacing: Theme.s(6)) {
                 Chip(title: Theme.folderLabel, icon: "folder") { close(); c.openClipsFolder() }
-                Chip(title: nil, icon: "gearshape") { close(); SettingsWindow.shared.show() }.help(Theme.settingsLabel)
+                Chip(title: nil, icon: "gearshape") { state.settings = .video }.help(Theme.settingsLabel)
             }
             .padding(.top, Theme.s(2))
         }
@@ -483,6 +446,70 @@ private struct ClassicWide: View {
     }
 }
 
+/// Classic layout: Settings in the Gallery's place, with the same five tabs as the Sidebar.
+private struct ClassicSettings: View {
+    let page: SettingsPage
+    @ObservedObject private var state = OverlayState.shared
+
+    private static let style = SettingsStyle(text: .white, muted: .white.opacity(0.55), value: .white.opacity(0.82),
+                                             line: .white.opacity(0.14), rowLine: .white.opacity(0.07), selected: nil,
+                                             selectedText: .black, hover: .white.opacity(0.06), radius: 0, segmentWidth: 460)
+
+    private var height: CGFloat {
+        let screen = NSScreen.main?.frame.height ?? 900
+        return min(max(screen - Theme.s(64) - 330, 260), 560)
+    }
+
+    var body: some View {
+        let tab = SettingsTab.holding(page)
+        VStack(spacing: 0) {
+            HStack(spacing: Theme.s(5)) {
+                ForEach(SettingsTab.allCases) { t in
+                    ClassicCategory(title: t.title, on: t == tab) {
+                        withAnimation(.easeOut(duration: 0.12)) { state.settings = t.pages[0] }
+                    }
+                }
+            }
+            .padding(Theme.s(8))
+            Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(tab.pages) { p in
+                        if tab.pages.count > 1 { SettingsGroupTitle(title: p.title) }
+                        SettingsPageView(page: p)
+                    }
+                }
+                .padding(.horizontal, 22).padding(.bottom, 12).padding(.top, tab.pages.count > 1 ? 0 : 4)
+            }
+            .id(tab)
+            .frame(height: height)
+        }
+        .frame(width: 880)
+        .classicPanel()
+        .environment(\.settingsStyle, Self.style)
+    }
+}
+
+private struct ClassicCategory: View {
+    let title: String
+    let on: Bool
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title).font(Theme.font(10.5, .semibold)).lineLimit(1)
+                .foregroundStyle(on ? .white : .white.opacity(0.75))
+                .frame(maxWidth: .infinity).padding(.vertical, Theme.s(7))
+                .background(Rectangle().fill(Color.white.opacity(hover || on ? 0.1 : 0.04)))
+                .overlay(Rectangle().strokeBorder(on ? Theme.accent : Theme.line, lineWidth: on ? Theme.s(1.5) : 1))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+    }
+}
+
 /// Classic layout: small round icon button (mic, folder, settings).
 private struct ClassicRound: View {
     let icon: String
@@ -510,94 +537,9 @@ private extension View {
     }
 }
 
-/// Big round icon button with title and hotkey hint (Tiles layout).
-private struct IconTile: View {
-    let icon: String
-    let title: String
-    let tint: Color
-    let badge: String?
-    let hint: Hotkey
-    let caption: String
-    var hoverCaption: String? = nil
-    let progress: Double?
-    var flashOnTap = false
-    let action: () -> Void
-    let rightAction: () -> Void
-
-    @State private var hover = false
-    @State private var pressed = false
-    @State private var flash = false
-
-    private var on: Bool { badge != nil }
-
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Theme.s(Theme.radius * 0.72), style: .continuous)
-        VStack(spacing: Theme.s(9)) {
-            ZStack {
-                Circle().fill(on ? tint.opacity(0.24) : Color.white.opacity(hover ? 0.11 : 0.07))
-                if let progress {
-                    Circle().trim(from: 0, to: min(max(progress, 0), 1))
-                        .stroke(tint, style: StrokeStyle(lineWidth: Theme.s(3), lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                        .padding(Theme.s(1.5))
-                        .animation(.linear(duration: 0.9), value: progress)
-                }
-                IconGlyph(name: icon, size: Theme.s(30), weight: .semibold)
-                    .foregroundStyle(on ? tint : .white.opacity(0.9))
-            }
-            .frame(width: Theme.s(72), height: Theme.s(72))
-            .scaleEffect(pressed ? 0.94 : (hover ? 1.04 : 1))
-
-            Text(title).font(Theme.font(14, .semibold))
-            Text(hover ? (hoverCaption ?? caption) : caption)
-                .font(Theme.font(11.5)).foregroundStyle(Theme.muted).lineLimit(1)
-
-            if Theme.showHotkeys, hint.isSet {
-                Text(hint.display)
-                    .font(Theme.mono(11))
-                    .padding(.horizontal, Theme.s(6)).padding(.vertical, Theme.s(2))
-                    .background(RoundedRectangle(cornerRadius: Theme.s(5)).fill(Color.white.opacity(0.07)))
-                    .opacity(0.75)
-            }
-        }
-        .padding(.top, Theme.s(18)).padding(.horizontal, Theme.s(12)).padding(.bottom, Theme.s(14))
-        .frame(width: Theme.s(150))
-        .background(shape.fill(
-            on ? AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.16), Color.white.opacity(0.05)],
-                                              startPoint: .topLeading, endPoint: .center))
-               : AnyShapeStyle(Color.white.opacity(hover ? 0.09 : 0.05))))
-        .overlay(shape.strokeBorder(on ? tint.opacity(0.6) : Theme.line))
-        .overlay(shape.fill(Color.white.opacity(flash ? 0.25 : 0)).allowsHitTesting(false))
-        .overlay(alignment: .topTrailing) {
-            if let badge {
-                Text(badge).font(.system(size: Theme.s(10), weight: .heavy, design: .rounded))
-                    .padding(.horizontal, Theme.s(7)).padding(.vertical, Theme.s(4))
-                    .background(Capsule().fill(tint.opacity(0.25)))
-                    .foregroundStyle(tint)
-                    .padding(Theme.s(10))
-            }
-        }
-        .overlay(ClickCatcher(
-            onHover: { h in withAnimation(.easeOut(duration: 0.15)) { hover = h } },
-            onPress: { p in withAnimation(p ? .easeOut(duration: 0.08) : .spring(duration: 0.25)) { pressed = p } },
-            onLeft: { fire(action) },
-            onRight: { fire(rightAction) }))
-    }
-}
-
-extension IconTile {
-    fileprivate func fire(_ f: () -> Void) {
-        if flashOnTap {
-            flash = true
-            withAnimation(.easeOut(duration: 0.35)) { flash = false }
-        }
-        f()
-    }
-}
-
 /// Transparent AppKit view on top of a tile that reports left and right clicks separately
 /// (SwiftUI's tap gesture only sees the left button) plus hover and press state.
-private struct ClickCatcher: NSViewRepresentable {
+struct ClickCatcher: NSViewRepresentable {
     let onHover: (Bool) -> Void
     let onPress: (Bool) -> Void
     let onLeft: () -> Void
