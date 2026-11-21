@@ -1,0 +1,90 @@
+# Builds the Windows app on GitHub's Windows machines.
+#  - Pushes and pull requests that touch windows/: build it and run the self-test.
+#  - Publishing a release (or running this by hand with a tag): build, sign with the "Rewind Release"
+#    certificate from the repository secrets WINDOWS_CERT_PFX (the .pfx as base64) and
+#    WINDOWS_CERT_PASSWORD, and attach the installers and zips to that release. The in-app updater only
+#    installs installers signed with that same certificate.
+name: Windows
+
+on:
+  push:
+    branches: [main]
+    paths: ['windows/**', '.github/workflows/windows.yml']
+  pull_request:
+    paths: ['windows/**']
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and attach the Windows files to, like v2.1.0
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build
+        run: .\windows\build.ps1
+      - name: Self-test
+        run: |
+          .\windows\build\Rewind.exe --selftest "$env:RUNNER_TEMP\rewind-selftest" | Out-Host
+          exit $LASTEXITCODE
+
+  release:
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install Inno Setup
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+      - name: Import the signing certificate
+        env:
+          PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if (-not $env:PFX) { throw 'The WINDOWS_CERT_PFX secret is missing.' }
+          $file = Join-Path $env:RUNNER_TEMP 'release.pfx'
+          [IO.File]::WriteAllBytes($file, [Convert]::FromBase64String($env:PFX))
+          try {
+            $null = Import-PfxCertificate -FilePath $file -CertStoreLocation Cert:\CurrentUser\My `
+              -Password (ConvertTo-SecureString $env:PFX_PASSWORD -AsPlainText -Force)
+          } finally { Remove-Item $file -Force }
+      - name: Build, sign and package
+        run: .\windows\release.ps1 $env:TAG.TrimStart('v')
+      - name: Check the signatures
+        run: |
+          # The certificate users' copies trust (scripts\new-signing-cert.ps1 made it; it's public, the key isn't).
+          $expected = '91FEB685C62B8CC856BFCC9BB4D59316230F714E'
+          $files = Get-ChildItem windows\dist\Rewind-*-Windows-*-Setup.exe, windows\dist\win-*\Rewind.exe
+          if ($files.Count -lt 4) { throw "Expected 2 installers and 2 apps, found $($files.Count)." }
+          foreach ($f in $files) {
+            $signer = (Get-AuthenticodeSignature $f.FullName).SignerCertificate
+            if ($signer.Thumbprint -ne $expected) { throw "$($f.Name) isn't signed with the Rewind Release certificate." }
+            Write-Host "signed: $($f.Name)"
+          }
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = (Get-ChildItem windows\dist\Rewind-*-Windows-*).FullName
+          gh release upload $env:TAG $files --clobber --repo $env:GITHUB_REPOSITORY
+      - name: Remove the certificate
+        if: always()
+        run: Get-ChildItem Cert:\CurrentUser\My | Where-Object Subject -eq 'CN=Rewind Release' | Remove-Item -Force
