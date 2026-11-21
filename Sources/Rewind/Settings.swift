@@ -222,6 +222,7 @@ final class Settings: ObservableObject {
         static let cleanup = "autoCleanup", cleanupDays = "cleanupDays"
         static let appPrefixes = "appPrefixes"
         static let playerSize = "playerSize", customMbps = "customMbps"
+        static let shareLimit = "shareLimitMB", shareCustom = "shareLimitCustom"
         static let autoUpdate = "checkForUpdates", customFps = "customFps"
         static let layout = "overlayLayout", appearance = "overlayAppearance", accent = "accentColor", dim = "overlayDim", showHotkeys = "showHotkeys"
     }
@@ -258,6 +259,11 @@ final class Settings: ObservableObject {
     @Published var playerSize: Double { didSet { d.set(playerSize, forKey: K.playerSize) } }
     /// Bitrate in Mbps when Quality is "Custom bitrate".
     @Published var customMbps: Int { didSet { d.set(customMbps, forKey: K.customMbps) } }
+    /// Copied clips bigger than this many MB are shrunk to fit first (0 = no limit). See ClipSharer.
+    @Published var shareLimitMB: Int { didSet { d.set(shareLimitMB, forKey: K.shareLimit) } }
+    /// The limit was typed in rather than picked from ClipSharer.presetsMB.
+    @Published var shareLimitCustom: Bool { didSet { d.set(shareLimitCustom, forKey: K.shareCustom) } }
+    static let shareLimitRange = 1...10_000
     /// Check GitHub for a newer version when Rewind starts.
     @Published var checkForUpdates: Bool { didSet { d.set(checkForUpdates, forKey: K.autoUpdate) } }
 
@@ -274,7 +280,7 @@ final class Settings: ObservableObject {
             K.fps: 60, K.quality: Quality.high.rawValue, K.codec: VideoCodec.h264.rawValue,
             K.resolution: 0, K.cursor: true, K.sysAudio: true, K.mic: false, K.mixMic: true,
             K.replay: 120, K.startReplay: true, K.cleanup: false, K.cleanupDays: 14,
-            K.layout: OverlayLayout.panes.rawValue, K.accent: Int(Theme.defaultAccent), K.dim: 0.6, K.showHotkeys: true, K.playerSize: Theme.defaultPlayerSize, K.customMbps: 20, K.autoUpdate: true,
+            K.layout: OverlayLayout.panes.rawValue, K.accent: Int(Theme.defaultAccent), K.dim: 0.6, K.showHotkeys: true, K.playerSize: Theme.defaultPlayerSize, K.customMbps: 20, K.autoUpdate: true, K.shareLimit: 10,
         ])
         displayID = UInt32(clamping: d.integer(forKey: K.display))
         captureAppID = d.string(forKey: K.appID) ?? ""
@@ -292,6 +298,8 @@ final class Settings: ObservableObject {
         startReplayOnLaunch = d.bool(forKey: K.startReplay)
         autoCleanup = d.bool(forKey: K.cleanup)
         cleanupDays = max(1, d.integer(forKey: K.cleanupDays))
+        shareLimitMB = min(max(d.integer(forKey: K.shareLimit), 0), Settings.shareLimitRange.upperBound)
+        shareLimitCustom = d.bool(forKey: K.shareCustom)
         appPrefixes = d.stringArray(forKey: K.appPrefixes) ?? []
         overlayLayout = OverlayLayout.saved(d.string(forKey: K.layout) ?? "") ?? .panes
         overlayAppearance = OverlayAppearance(rawValue: d.string(forKey: K.appearance) ?? "") ?? .system

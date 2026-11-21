@@ -117,7 +117,8 @@ final class Controller: ObservableObject {
                     await Controller.mixDown(url, enabled: mix)
                     ClipLibrary.shared.refreshIfShown()
                     Toast.show("Replay saved", "\(formatDuration(length)) · \(url.lastPathComponent)",
-                               icon: "checkmark.circle.fill", tint: Theme.accent) { OverlayController.shared.show(preview: url) }
+                               icon: "checkmark.circle.fill", tint: Theme.accent, duration: 5,
+                               button: ("Copy", { ClipSharer.shared.copy(url) })) { OverlayController.shared.show(preview: url) }
                 case .failure(let error):
                     Toast.error("Couldn't save replay", error)
                 }
@@ -161,7 +162,8 @@ final class Controller: ObservableObject {
                     await Controller.mixDown(rec.url, enabled: mix)
                     ClipLibrary.shared.refreshIfShown()
                     Toast.show("Recording saved", "\(formatDuration(length)) · \(rec.url.lastPathComponent)",
-                               icon: "checkmark.circle.fill", tint: Theme.accent) { OverlayController.shared.show(preview: rec.url) }
+                               icon: "checkmark.circle.fill", tint: Theme.accent, duration: 5,
+                               button: ("Copy", { ClipSharer.shared.copy(rec.url) })) { OverlayController.shared.show(preview: rec.url) }
                 case .failure(let error):
                     Toast.error("Recording failed", error)
                 }
@@ -189,7 +191,8 @@ final class Controller: ObservableObject {
             do {
                 try await CaptureEngine.screenshot(displayID: displayID, appID: appID, showCursor: cursor, to: url)
                 ClipLibrary.shared.refreshIfShown()
-                Toast.show("Screenshot saved", url.lastPathComponent, icon: "camera.fill", tint: Theme.screenshot) { OverlayController.shared.show(preview: url) }
+                Toast.show("Screenshot saved", url.lastPathComponent, icon: "camera.fill", tint: Theme.screenshot,
+                           button: ("Copy", { ClipSharer.shared.copy(url) })) { OverlayController.shared.show(preview: url) }
             } catch {
                 Toast.error("Screenshot failed", error)
             }

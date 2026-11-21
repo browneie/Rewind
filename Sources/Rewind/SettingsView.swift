@@ -589,9 +589,28 @@ struct SettingsPageView: View {
         ToggleRow(title: "Delete old clips automatically", isOn: $s.autoCleanup)
         ChoiceRow(title: "Keep clips for", options: Cleanup.dayOptions.map { ($0, "\($0)d") }, selection: $s.cleanupDays)
             .disabled(!s.autoCleanup).opacity(s.autoCleanup ? 1 : 0.4)
+        ChoiceRow(title: "Size limit for Copy",
+                  hint: "Copy puts a clip on the clipboard to paste into Discord and the like. Bigger clips are shrunk to fit first; set this to your upload limit.",
+                  options: ClipSharer.presetsMB.map { ($0, ClipSharer.label(mb: $0)) } + [(-1, "Custom")], selection: shareChoice)
+        if s.shareLimitCustom {
+            NumberRow(title: "Custom limit", value: $s.shareLimitMB, range: Settings.shareLimitRange, unit: "MB")
+        }
         Note(text: s.autoCleanup
              ? "Replays, recordings and screenshots older than \(s.cleanupDays) \(s.cleanupDays == 1 ? "day" : "days") are moved to the Trash, so you can still get them back. Other files in the folder are never touched."
              : "Clips are kept until you delete them.")
+    }
+
+    /// A preset size in MB, 0 for no limit, or -1 for Custom.
+    private var shareChoice: Binding<Int> {
+        Binding(get: { s.shareLimitCustom ? -1 : s.shareLimitMB }, set: { v in
+            if v == -1 {
+                s.shareLimitCustom = true
+                if s.shareLimitMB == 0 { s.shareLimitMB = 25 }
+            } else {
+                s.shareLimitCustom = false
+                s.shareLimitMB = v
+            }
+        })
     }
 
     /// The folder picker is a normal window, which would open behind the overlay, so the overlay steps aside for it.

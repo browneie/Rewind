@@ -438,6 +438,9 @@ sealed class ClipPane : StackPanel
                 break;
         }
         ClipLibrary.Changed += OnLibrary;
+        // While the pane is on screen, Copy's "Fitting… %" follows along.
+        Loaded += (_, _) => { ClipSharer.Changed -= RefreshChrome; ClipSharer.Changed += RefreshChrome; };
+        Unloaded += (_, _) => ClipSharer.Changed -= RefreshChrome;
         OnLibrary();
     }
 
@@ -546,6 +549,9 @@ sealed class ClipPane : StackPanel
                 if (view.IsTrimming || view.IsSaving) { trim.IsEnabled = false; trim.Opacity = 0.5; }
                 actions.Children.Add(trim);
             }
+            actions.Children.Add(new Chip(ClipSharer.IsBusy(item.FilePath) ? $"{(int)(ClipSharer.Progress * 100)}%" : null, Sym.Copy,
+                    () => ClipSharer.Copy(item.FilePath))
+                { ToolTip = "Copy to paste into Discord or anywhere", Margin = new Thickness(Theme.S(8), 0, 0, 0) });
             actions.Children.Add(new Chip(null, Sym.Folder, () => { var path = item.FilePath; close(); Controller.Reveal(path); })
                 { ToolTip = "Show in Explorer", Margin = new Thickness(Theme.S(8), 0, 0, 0) });
             actions.Children.Add(new Chip(null, Sym.Trash, () => Delete(item))
@@ -593,6 +599,8 @@ sealed class ClipPane : StackPanel
             trim.IsEnabled = !IsBusy;
             list.Add(trim);
         }
+        list.Add(new TextLink(ClipSharer.ButtonTitle(item.FilePath), brush, 13, () => ClipSharer.Copy(item.FilePath), underline,
+            "Copy to paste into Discord or anywhere"));
         list.Add(new TextLink("Show in Explorer", brush, 13, () => { var path = item.FilePath; close(); Controller.Reveal(path); }, underline));
         var del = new TextLink("Delete", brush, 13, () => Delete(item), underline, "Move to the Recycle Bin");
         del.IsEnabled = view is not { IsSaving: true };

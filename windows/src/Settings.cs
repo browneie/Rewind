@@ -279,6 +279,8 @@ sealed class Settings : INotifyPropertyChanged
         public bool ShowHotkeys { get; set; } = true;
         public double PlayerSize { get; set; } = Theme.DefaultPlayerSize;
         public int CustomMbps { get; set; } = 20;
+        public int ShareLimitMB { get; set; } = 10;
+        public bool ShareLimitCustom { get; set; }
         public bool CheckForUpdates { get; set; } = true;
         public OverlayAppearance OverlayAppearance { get; set; } = OverlayAppearance.System;
         public ExportFormat ExportFormat { get; set; } = ExportFormat.Original;
@@ -316,6 +318,7 @@ sealed class Settings : INotifyPropertyChanged
         x.Hotkeys ??= new();
         x.AppPrefixes ??= new();
         x.CleanupDays = Math.Max(1, x.CleanupDays);
+        x.ShareLimitMB = Math.Clamp(x.ShareLimitMB, 0, MaxShareLimitMB);
         x.DisplayId ??= "";
         x.CaptureAppId ??= "";
         x.CaptureAppName ??= "";
@@ -381,6 +384,11 @@ sealed class Settings : INotifyPropertyChanged
     public double PlayerSize { get => d.PlayerSize; set => Set(d.PlayerSize, Math.Clamp(value, Theme.MinPlayerSize, Theme.MaxPlayerSize), v => d.PlayerSize = v); }
     /// Bitrate in Mbps when Quality is "Custom bitrate".
     public int CustomMbps { get => d.CustomMbps; set => Set(d.CustomMbps, Math.Clamp(value, CaptureMath.MinMbps, CaptureMath.MaxMbps), v => d.CustomMbps = v); }
+    /// Copied clips bigger than this many MB are shrunk to fit first (0 = no limit). See ClipSharer.
+    public int ShareLimitMB { get => d.ShareLimitMB; set => Set(d.ShareLimitMB, Math.Clamp(value, 0, MaxShareLimitMB), v => d.ShareLimitMB = v); }
+    /// The limit was typed in rather than picked from ClipSharer.PresetsMB.
+    public bool ShareLimitCustom { get => d.ShareLimitCustom; set => Set(d.ShareLimitCustom, value, v => d.ShareLimitCustom = v); }
+    public const int MaxShareLimitMB = 10_000;
     /// Check GitHub for a newer version when Rewind starts.
     public bool CheckForUpdates { get => d.CheckForUpdates; set => Set(d.CheckForUpdates, value, v => d.CheckForUpdates = v); }
     /// App names used to name clips ("Roblox"), so cleanup and Recent clips still recognise those files.

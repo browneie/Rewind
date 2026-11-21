@@ -73,6 +73,7 @@ struct ConsoleLayout: View {
     @ObservedObject private var lib = ClipLibrary.shared
     @ObservedObject private var preview = ClipPreview.shared
     @ObservedObject private var state = OverlayState.shared
+    @ObservedObject private var sharer = ClipSharer.shared
 
     static let bg = Color(hex: 0x0F100F), line = Color(hex: 0x2A2B29), faint = Color(hex: 0x1F201E)
     static let dim = Color(hex: 0x7D7E79), soft = Color(hex: 0xB5B6B1)
@@ -166,6 +167,7 @@ struct ConsoleLayout: View {
                             TextButton(title: preview.isSavingTrim ? "Saving…" : "Trim", color: Self.soft) { preview.beginTrim() }
                                 .disabled(busy).opacity(busy ? 0.4 : 1)
                         }
+                        TextButton(title: sharer.buttonTitle(for: item.url), color: Self.soft) { sharer.copy(item.url) }
                         TextButton(title: "Show in Finder", color: Self.soft) { let url = item.url; close(); reveal(url) }
                         TextButton(title: "Delete", color: Self.soft) { preview.close(); lib.trash(item) }
                     }
@@ -333,6 +335,7 @@ struct SidebarLayout: View {
     @ObservedObject private var lib = ClipLibrary.shared
     @ObservedObject private var preview = ClipPreview.shared
     @ObservedObject private var state = OverlayState.shared
+    @ObservedObject private var sharer = ClipSharer.shared
 
     fileprivate struct Palette {
         let bg, text, muted, line, rowLine, wash: Color
@@ -393,6 +396,7 @@ struct SidebarLayout: View {
                             TextButton(title: preview.isSavingTrim ? "Saving…" : "Trim", color: p.muted, underline: true) { preview.beginTrim() }
                                 .disabled(preview.isSavingTrim)
                         }
+                        TextButton(title: sharer.buttonTitle(for: item.url), color: p.muted, underline: true) { sharer.copy(item.url) }
                         TextButton(title: "Show in Finder", color: p.muted, underline: true) { let url = item.url; close(); reveal(url) }
                         TextButton(title: "Delete", color: p.muted, underline: true) { preview.close(); lib.trash(item) }
                     }

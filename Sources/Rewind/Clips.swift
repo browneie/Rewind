@@ -371,6 +371,7 @@ struct ClipPane: View {
     var reservedWidth: CGFloat = 0
     var reservedHeight: CGFloat = 0
     var showsClose = true
+    @ObservedObject private var sharer = ClipSharer.shared
     @ObservedObject private var lib = ClipLibrary.shared
     @ObservedObject private var preview = ClipPreview.shared
     @ObservedObject private var settings = Settings.shared
@@ -407,6 +408,8 @@ struct ClipPane: View {
                             .disabled(preview.isTrimming || preview.isSavingTrim)
                             .opacity(preview.isTrimming || preview.isSavingTrim ? 0.5 : 1)
                     }
+                    Chip(title: sharer.busy == item.url ? "\(Int(sharer.progress * 100))%" : nil, icon: "doc.on.clipboard") { sharer.copy(item.url) }
+                        .help("Copy to paste into Discord or anywhere")
                     Chip(title: nil, icon: "folder") { let url = item.url; close(); reveal(url) }.help("Show in Finder")
                     Chip(title: nil, icon: "trash") { preview.close(); lib.trash(item) }.help("Move to Trash")
                 }

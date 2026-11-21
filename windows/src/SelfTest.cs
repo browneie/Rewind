@@ -125,6 +125,7 @@ static class SelfTest
             ok &= Inspect(recMix, audioTracks: 1, minSeconds: seconds - 0.5);
             ok &= TestTrim(recSep, audioTracks: 2);
             ok &= TestConvert(recSep, audioTracks: 2);
+            ok &= TestShare(recSep, audioTracks: 2);
         }
         return ok;
     }
@@ -171,6 +172,25 @@ static class SelfTest
             File.Delete(dest);
         }
         File.Delete(trimmed);
+        return ok;
+    }
+
+    /// Copy's fit-to-size: shrinking the recording under a limit that leaves about 300 kbps for video.
+    static bool TestShare(string source, int audioTracks)
+    {
+        var r = Mp4Reader.Open(source);
+        double seconds = r.Video!.PresentedDuration;
+        double audio = r.AudioTracks.Sum(a => a.MediaDuration > 0 ? a.Sizes.Sum(x => (long)x) * 8 / a.MediaDuration : 192_000);
+        long limit = (long)((audio + 300_000) * seconds / 8 / 0.92);
+        string dest;
+        try { dest = ClipSharer.Fit(source, limit, _ => { }); }
+        catch (Exception e) { Console.WriteLine($"FAIL share fit: {e}"); return false; }
+        long size = new FileInfo(dest).Length;
+        Console.Write($"share fit → {size / 1024} KB (limit {limit / 1024} KB); ");
+        bool ok = size <= limit;
+        if (!ok) Console.WriteLine("FAIL share fit: over the limit");
+        ok &= Inspect(dest, audioTracks, minSeconds: seconds - 0.15);
+        File.Delete(dest);
         return ok;
     }
 

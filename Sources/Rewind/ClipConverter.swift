@@ -48,8 +48,10 @@ enum ClipConverter {
     /// Writes `range` of `source` to `dest` in `format` at `quality` (0–100). `progress` gets 0…1 on the main actor.
     /// At 100 ("original"): a clip already in `format` is copied without re-encoding (exactly the original
     /// quality), and anything else is re-encoded at the original's bitrate (about the same size).
+    /// With `bitrate` (bits per second), `quality` is ignored: the video is encoded at that average bitrate and
+    /// scaled down when it's too low for the clip's size (for fitting a size limit, see ClipSharer).
     static func convert(_ source: URL, range: CMTimeRange, format: ExportFormat, quality: Int, to dest: URL,
-                        progress: @escaping @MainActor (Double) -> Void) async throws {
+                        bitrate: Int? = nil, progress: @escaping @MainActor (Double) -> Void) async throws {
         guard let codec = format.codecType else { throw RewindError("Nothing to convert to.") }
         let asset = AVURLAsset(url: source)
         guard let vTrack = try await asset.loadTracks(withMediaType: .video).first else {
@@ -61,7 +63,7 @@ enum ClipConverter {
         let fps = try await vTrack.load(.nominalFrameRate)
         let sourceBitrate = try await vTrack.load(.estimatedDataRate)
 
-        if quality >= 100 {
+        if quality >= 100, bitrate == nil {
             let subtype = try await vTrack.load(.formatDescriptions).first.map { CMFormatDescriptionGetMediaSubType($0) }
             let same = switch codec {
             case .h264: subtype == kCMVideoCodecType_H264
@@ -84,9 +86,15 @@ enum ClipConverter {
         writer.shouldOptimizeForNetworkUse = true
 
         // Video: decode to YUV, re-encode on the hardware encoder.
-        let vOut = AVAssetReaderTrackOutput(track: vTrack, outputSettings: [
+        let size = bitrate.map { outputSize(natural, bitrate: $0, fps: Double(fps)) } ?? natural
+        var readSettings: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-        ])
+        ]
+        if size != natural { // the decoder scales it down
+            readSettings[kCVPixelBufferWidthKey as String] = Int(size.width)
+            readSettings[kCVPixelBufferHeightKey as String] = Int(size.height)
+        }
+        let vOut = AVAssetReaderTrackOutput(track: vTrack, outputSettings: readSettings)
         vOut.alwaysCopiesSampleData = false
         guard reader.canAdd(vOut) else { throw RewindError("Can't read the video.") }
         reader.add(vOut)
@@ -94,7 +102,9 @@ enum ClipConverter {
             AVVideoMaxKeyFrameIntervalDurationKey: 2,
             AVVideoAllowFrameReorderingKey: true, // B-frames: smaller files, fine for a finished clip
         ]
-        if quality >= 100, sourceBitrate > 0 {
+        if let bitrate {
+            compression[AVVideoAverageBitRateKey] = bitrate
+        } else if quality >= 100, sourceBitrate > 0 {
             compression[AVVideoAverageBitRateKey] = Int(sourceBitrate) // match the original
         } else {
             compression[AVVideoQualityKey] = encoderQuality(min(quality, 99))
@@ -103,8 +113,8 @@ enum ClipConverter {
         if codec == .h264 { compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel }
         let vIn = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: codec,
-            AVVideoWidthKey: Int(natural.width),
-            AVVideoHeightKey: Int(natural.height),
+            AVVideoWidthKey: Int(size.width),
+            AVVideoHeightKey: Int(size.height),
             AVVideoCompressionPropertiesKey: compression,
         ])
         vIn.transform = transform
@@ -162,5 +172,18 @@ enum ClipConverter {
         guard writer.status == .completed else { throw writer.error ?? RewindError("Writing the new file failed.") }
         try FileManager.default.moveItem(at: tmp, to: dest)
         Task { @MainActor in progress(1) } // don't wait for the main thread
+    }
+
+    /// The clip's size, or smaller (1440p, 1080p, 720p, 480p) while `bitrate` is under about 0.04 bits per pixel
+    /// per frame, below which H.264 turns to blocks. Even numbers, same shape.
+    static func outputSize(_ natural: CGSize, bitrate: Int, fps: Double) -> CGSize {
+        var w = natural.width, h = natural.height
+        let f = fps > 0 ? fps : 60
+        for target in [1440.0, 1080, 720, 480] where min(w, h) > target && Double(bitrate) / (w * h * f) < 0.04 {
+            let s = target / min(w, h)
+            w = (w * s / 2).rounded() * 2
+            h = (h * s / 2).rounded() * 2
+        }
+        return CGSize(width: w, height: h)
     }
 }

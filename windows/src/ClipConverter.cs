@@ -49,8 +49,10 @@ static class ClipConverter
 
     /// `start` and `end` are in seconds of the clip as it's shown (edit lists applied). Returns the new length.
     /// At 100 ("original") a clip already in `format` is cut without re-encoding, exactly like Trim.
+    /// With `bitrate` (bits per second), `quality` is ignored and the video is encoded at that bitrate
+    /// (for fitting a size limit, see ClipSharer).
     public static double Convert(string source, double start, double end, ExportFormat format, int quality, string dest,
-                                 Action<double> progress)
+                                 Action<double> progress, int? bitrate = null)
     {
         var codec = format.Codec() ?? throw new RewindException("Nothing to convert to.");
         var r = Mp4Reader.Open(source);
@@ -58,7 +60,7 @@ static class ClipConverter
         if (v.Count == 0) throw new RewindException("This clip's video can't be read.");
         end = Math.Min(end, v.PresentedDuration);
         if (end <= start) throw new RewindException("Choose a part to keep first.");
-        if (quality >= 100 && v.Codec == codec)
+        if (quality >= 100 && bitrate == null && v.Codec == codec)
         {
             double len = ClipTrimmer.Trim(source, start, end, dest);
             progress(1);
@@ -69,7 +71,7 @@ static class ClipConverter
 
         int fps = (int)Math.Clamp(Math.Round((v.Count - 1) / Math.Max(v.MediaDuration, 0.001)), 1, 360);
         double sourceBps = v.Sizes.Sum(x => (long)x) * 8 / Math.Max(v.MediaDuration, 0.001);
-        int bitrate = TargetBitrate(sourceBps, v.Codec, codec, quality);
+        int rate = bitrate is { } fixedRate ? Math.Max(fixedRate, 100_000) : TargetBitrate(sourceBps, v.Codec, codec, quality);
 
         // f: the frame on screen at `start`; e: one past the last frame kept.
         int f = 0;
@@ -94,7 +96,7 @@ static class ClipConverter
                 {
                     var tuning = new EncoderTuning(RateControl: 1, PeakFactor: 1.5, BitrateFactor: 1.0, QualityVsSpeed: 100, KeyframeSeconds: 2);
                     Exception? encoderError = null;
-                    var enc = new VideoEncoder(gpu, v.Width, v.Height, fps, codec, bitrate, frame =>
+                    var enc = new VideoEncoder(gpu, v.Width, v.Height, fps, codec, rate, frame =>
                     {
                         lock (frames)
                         {

@@ -92,6 +92,7 @@ enum SelfTest {
         }
         if !testTrim(recURL) { failed = true }
         if !testConvert(recURL) { failed = true }
+        if !testShare(recURL) { failed = true }
         if !testCleanup(dir: dir) { failed = true }
         return failed ? 1 : 0
     }
@@ -120,6 +121,40 @@ enum SelfTest {
                 if !inspect(dest, audioTracks: 1) { ok = false }
                 try? FileManager.default.removeItem(at: dest)
             }
+        }
+        return ok
+    }
+
+    /// Copy's fit-to-size: the size steps for a low bitrate, a shrunk copy under a limit, and the scale-down.
+    private static func testShare(_ source: URL) -> Bool {
+        var ok = true
+        let stepped = ClipConverter.outputSize(CGSize(width: 2560, height: 1600), bitrate: 2_000_000, fps: 60)
+        if stepped != CGSize(width: 1152, height: 720) { print("FAIL share: 2560×1600 at 2 Mbps → \(stepped), expected 1152×720"); ok = false }
+        let sem = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var result: Result<(URL, Int64, CGSize), Error> = .failure(RewindError("didn't run"))
+        Task {
+            do {
+                let asset = AVURLAsset(url: source)
+                let seconds = try await asset.load(.duration).seconds
+                var audio = 0.0
+                for t in try await asset.loadTracks(withMediaType: .audio) { audio += Double(try await t.load(.estimatedDataRate)) }
+                // A limit that leaves about 100 kbps for video: low enough to force a scale-down.
+                let limit = Int64((max(audio, 0) + 160_000) * seconds / 8 / 0.92)
+                let out = try await ClipSharer.fit(source, limit: limit) { _ in }
+                let size = try await AVURLAsset(url: out).loadTracks(withMediaType: .video).first!.load(.naturalSize)
+                result = .success((out, limit, size))
+            } catch { result = .failure(error) }
+            sem.signal()
+        }
+        sem.wait()
+        switch result {
+        case .failure(let e): print("FAIL share fit: \(e)"); ok = false
+        case .success(let (out, limit, size)):
+            let bytes = ClipSharer.fileSize(out)
+            print("share fit → \(bytes) bytes (limit \(limit)), \(Int(size.width))×\(Int(size.height)): ", terminator: "")
+            if bytes > limit { print("FAIL over the limit"); ok = false }
+            else if !inspect(out, audioTracks: 1) { ok = false }
+            try? FileManager.default.removeItem(at: out)
         }
         return ok
     }

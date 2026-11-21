@@ -47,23 +47,24 @@ static class Toast
 
     /// `closable` adds an ✕ that dismisses the notice without running `onClick`.
     /// `pinned` notices can't be replaced: others wait until it's clicked, closed or times out.
+    /// `button` adds a small button (like "Copy") that runs its own action instead of `onClick`.
     public static void Show(string title, string? subtitle, Sym icon, Color tint, double duration = 3.5, Action? onClick = null,
-                            bool closable = false, bool pinned = false)
+                            bool closable = false, bool pinned = false, (string Title, Action Action)? button = null)
     {
         var d = System.Windows.Application.Current?.Dispatcher;
         if (d == null) return;
-        if (!d.CheckAccess()) { d.BeginInvoke(() => Show(title, subtitle, icon, tint, duration, onClick, closable, pinned)); return; }
+        if (!d.CheckAccess()) { d.BeginInvoke(() => Show(title, subtitle, icon, tint, duration, onClick, closable, pinned, button)); return; }
 
         if (!pinned && (held || pinnedUp))
         {
-            waiting = () => Show(title, subtitle, icon, tint, duration, onClick, closable);
+            waiting = () => Show(title, subtitle, icon, tint, duration, onClick, closable, button: button);
             return;
         }
         var old = current;
         current = null;
         if (old != null) { old.Replaced = true; old.Dismiss(fast: true); }
         pinnedUp = pinned;
-        var w = new ToastWindow(title, subtitle, icon, tint, onClick, closable) { Pinned = pinned };
+        var w = new ToastWindow(title, subtitle, icon, tint, onClick, closable, button) { Pinned = pinned };
         current = w;
         w.Closed += (_, _) =>
         {
@@ -80,7 +81,8 @@ static class Toast
         bool dismissing;
         public bool Pinned, Replaced;
 
-        public ToastWindow(string title, string? subtitle, Sym icon, Color tint, Action? onClick, bool closable)
+        public ToastWindow(string title, string? subtitle, Sym icon, Color tint, Action? onClick, bool closable,
+                           (string Title, Action Action)? button)
         {
             this.onClick = onClick;
             WindowStyle = WindowStyle.None;
@@ -94,7 +96,8 @@ static class Toast
             Opacity = 0;
             Left = -10000; Top = -10000;
 
-            var content = BuildCard(title, subtitle, icon, tint, onClick != null, closable ? () => Dismiss(fast: false) : null);
+            var content = BuildCard(title, subtitle, icon, tint, onClick != null, closable ? () => Dismiss(fast: false) : null,
+                button is { } tb ? (tb.Title, () => { tb.Action(); Dismiss(fast: false); }) : null);
             Content = content;
             content.MouseLeftButtonUp += (_, _) => { this.onClick?.Invoke(); Dismiss(fast: false); };
 
@@ -141,15 +144,17 @@ static class Toast
     }
 
     /// Notifications are always dark, even while a light overlay is open.
-    public static FrameworkElement BuildCard(string title, string? subtitle, Sym icon, Color tint, bool clickable, Action? close = null)
+    public static FrameworkElement BuildCard(string title, string? subtitle, Sym icon, Color tint, bool clickable, Action? close = null,
+                                             (string Title, Action Action)? button = null)
     {
         bool light = Theme.Light;
         Theme.Light = false;
-        try { return BuildDarkCard(title, subtitle, icon, tint, clickable, close); }
+        try { return BuildDarkCard(title, subtitle, icon, tint, clickable, close, button); }
         finally { Theme.Light = light; }
     }
 
-    static FrameworkElement BuildDarkCard(string title, string? subtitle, Sym icon, Color tint, bool clickable, Action? close)
+    static FrameworkElement BuildDarkCard(string title, string? subtitle, Sym icon, Color tint, bool clickable, Action? close,
+                                          (string Title, Action Action)? button)
     {
         {
             var iconBox = new Border
@@ -171,6 +176,21 @@ static class Toast
             var row = new DockPanel { LastChildFill = true };
             DockPanel.SetDock(iconBox, Dock.Left);
             row.Children.Add(iconBox);
+            if (button is { } btn)
+            {
+                var pill = new Border
+                {
+                    CornerRadius = new CornerRadius(Theme.S(11)), Background = Theme.Brush(Colors.White, 0.14),
+                    Padding = new Thickness(Theme.S(10), Theme.S(4), Theme.S(10), Theme.S(4)),
+                    VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(Theme.S(8), 0, 0, 0), Cursor = Cursors.Hand,
+                    Child = Theme.Text(btn.Title, 11, FontWeights.SemiBold),
+                };
+                pill.MouseEnter += (_, _) => pill.Background = Theme.Brush(Colors.White, 0.22);
+                pill.MouseLeave += (_, _) => pill.Background = Theme.Brush(Colors.White, 0.14);
+                pill.MouseLeftButtonUp += (_, e) => { e.Handled = true; btn.Action(); };
+                DockPanel.SetDock(pill, Dock.Right);
+                row.Children.Add(pill);
+            }
             if (close != null)
             {
                 var x = new Border

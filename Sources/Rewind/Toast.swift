@@ -36,11 +36,12 @@ enum Toast {
 
     /// `closable` adds an ✕ that dismisses the notice without running `onClick`.
     /// `pinned` notices can't be replaced: others wait until it's clicked, closed or times out.
+    /// `button` adds a small button (like "Copy") that runs its own action instead of `onClick`.
     static func show(_ title: String, _ subtitle: String?, icon: String, tint: Color,
                      duration: Double = 3.5, closable: Bool = false, pinned: Bool = false,
-                     onClick: (() -> Void)? = nil) {
+                     button: (title: String, action: () -> Void)? = nil, onClick: (() -> Void)? = nil) {
         if !pinned, held || pinnedUp {
-            waiting = { show(title, subtitle, icon: icon, tint: tint, duration: duration, closable: closable, onClick: onClick) }
+            waiting = { show(title, subtitle, icon: icon, tint: tint, duration: duration, closable: closable, button: button, onClick: onClick) }
             return
         }
         pinnedUp = pinned
@@ -48,7 +49,8 @@ enum Toast {
         panel?.orderOut(nil)
 
         let view = ToastView(title: title, subtitle: subtitle, icon: icon, tint: tint, clickable: onClick != nil,
-                             closable: closable, close: { dismiss() }) {
+                             closable: closable, close: { dismiss() },
+                             button: button.map { b in (b.title, { b.action(); dismiss() }) }) {
             onClick?()
             dismiss()
         }
@@ -99,6 +101,7 @@ private struct ToastView: View {
     let clickable: Bool
     var closable = false
     var close: () -> Void = {}
+    var button: (title: String, action: () -> Void)? = nil
     let action: () -> Void
 
     var body: some View {
@@ -115,6 +118,15 @@ private struct ToastView: View {
                 }
             }
             Spacer(minLength: 0)
+            if let button {
+                Button(action: button.action) {
+                    Text(button.title).font(Theme.font(11, .semibold))
+                        .padding(.horizontal, Theme.s(10)).padding(.vertical, Theme.s(5))
+                        .background(Capsule().fill(Color.white.opacity(0.14)))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
             if closable {
                 Button(action: close) {
                     Image(systemName: "xmark").font(.system(size: Theme.s(10), weight: .heavy))

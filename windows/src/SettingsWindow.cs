@@ -334,6 +334,28 @@ sealed class SettingsContent : StackPanel
             Row("Keep clips for", keepFor),
         }, saveFooter);
 
+        var shareLimit = Combo(ClipSharer.PresetsMB.Select(n => (ClipSharer.Label(n), n)).Append(("Custom", -1)),
+            s.ShareLimitCustom ? -1 : s.ShareLimitMB, v =>
+            {
+                if (v == -1)
+                {
+                    s.ShareLimitCustom = true;
+                    if (s.ShareLimitMB == 0) s.ShareLimitMB = 25;
+                }
+                else
+                {
+                    s.ShareLimitCustom = false;
+                    s.ShareLimitMB = v;
+                }
+            });
+        var shareCustomRow = Row("Custom limit", ShareLimitBox());
+        refreshers.Add(() => shareCustomRow.Visibility = s.ShareLimitCustom ? Visibility.Visible : Visibility.Collapsed);
+        Section("Copy", new[]
+        {
+            Row("Size limit for Copy", shareLimit),
+            shareCustomRow,
+        }, Footer("Copy puts a clip on the clipboard to paste into Discord and the like. Bigger clips are shrunk to fit first; set this to your upload limit."));
+
         current = SettingsPage.Overlay;
         BuildOverlaySection();
 
@@ -507,6 +529,24 @@ sealed class SettingsContent : StackPanel
         row.Children.Add(Step("\ue738", -1, "1 Mbps less"));
         row.Children.Add(Step("\ue710", 1, "1 Mbps more"));
         row.Children.Add(new TextBlock { Text = "Mbps", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), ToolTip = $"{CaptureMath.MinMbps} to {CaptureMath.MaxMbps} Mbps" });
+        return row;
+    }
+
+    FrameworkElement ShareLimitBox()
+    {
+        var box = new TextBox { Width = 92, TextAlignment = TextAlignment.Right, MaxLength = 5, Text = s.ShareLimitMB.ToString() };
+        void Commit()
+        {
+            if (int.TryParse(new string(box.Text.Where(char.IsDigit).ToArray()), out int v)) s.ShareLimitMB = Math.Max(v, 1);
+            box.Text = s.ShareLimitMB.ToString();
+        }
+        box.LostKeyboardFocus += (_, _) => Commit();
+        box.PreviewKeyDown += (_, e) => { if (e.Key == Key.Enter) { Commit(); e.Handled = true; } };
+        refreshers.Add(() => { if (!box.IsKeyboardFocusWithin) box.Text = s.ShareLimitMB.ToString(); });
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(box);
+        row.Children.Add(new TextBlock { Text = "MB", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0),
+            ToolTip = $"1 to {Settings.MaxShareLimitMB} MB" });
         return row;
     }
 

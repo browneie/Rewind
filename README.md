@@ -17,6 +17,7 @@ A ShadowPlay-style screen recorder for macOS. Rewind keeps the last few minutes 
 - **Audio**: system sound and/or your mic, mixed into one track or kept as separate tracks.
 - **Overlay** (⌥Z): works over fullscreen games. You can play, trim, convert and delete clips right in the overlay, and change every setting there too. It has four layouts.
 - **Trim and convert**: cut a clip and save it as H.264 or HEVC, at any quality from "much smaller file" to "original".
+- **Copy to share**: one click puts a clip on the clipboard, ready to paste into Discord. Clips over your upload limit (Settings → Saving) are shrunk to fit first.
 - **Automatic updates and cleanup**: updates install with one click, and Rewind can move old clips to the Trash for you (off by default).
 
 ## Overlay layouts

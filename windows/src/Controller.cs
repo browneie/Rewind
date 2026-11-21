@@ -146,8 +146,8 @@ sealed class Controller
         {
             double length = await ClipWriter.WriteAsync(snap, path);
             ClipLibrary.RefreshIfShown();
-            Toast.Show("Replay saved", $"{Format.Duration(length)} · {Path.GetFileName(path)}", Sym.Check, Theme.Accent,
-                onClick: () => OverlayController.Show(path));
+            Toast.Show("Replay saved", $"{Format.Duration(length)} · {Path.GetFileName(path)}", Sym.Check, Theme.Accent, duration: 5,
+                onClick: () => OverlayController.Show(path), button: ("Copy", () => ClipSharer.Copy(path)));
         }
         catch (Exception e)
         {
@@ -196,8 +196,8 @@ sealed class Controller
             {
                 double length = await rec.FinishAsync();
                 ClipLibrary.RefreshIfShown();
-                Toast.Show("Recording saved", $"{Format.Duration(length)} · {Path.GetFileName(rec.Path)}", Sym.Check, Theme.Accent,
-                    onClick: () => OverlayController.Show(rec.Path));
+                Toast.Show("Recording saved", $"{Format.Duration(length)} · {Path.GetFileName(rec.Path)}", Sym.Check, Theme.Accent, duration: 5,
+                    onClick: () => OverlayController.Show(rec.Path), button: ("Copy", () => ClipSharer.Copy(rec.Path)));
             }
             catch (Exception e)
             {
@@ -222,7 +222,8 @@ sealed class Controller
             }
             await engine.ScreenshotAsync(settings.DisplayId, settings.CaptureAppId, settings.ShowCursor, path);
             ClipLibrary.RefreshIfShown();
-            Toast.Show("Screenshot saved", Path.GetFileName(path), Sym.Camera, Theme.Screenshot, onClick: () => OverlayController.Show(path));
+            Toast.Show("Screenshot saved", Path.GetFileName(path), Sym.Camera, Theme.Screenshot, onClick: () => OverlayController.Show(path),
+                button: ("Copy", () => ClipSharer.Copy(path)));
         }
         catch (Exception e)
         {
@@ -462,4 +463,8 @@ static class Format
         int t = (int)Math.Round(s);
         return t < 60 ? $"{t}s" : $"{t / 60}:{t % 60:00}";
     }
+
+    /// "12.3 MB", like Explorer (1 MB = 1,000,000 bytes here, as upload limits count them).
+    public static string Bytes(long b) =>
+        b >= 1_000_000_000 ? $"{b / 1e9:0.0} GB" : b >= 1_000_000 ? $"{b / 1e6:0.0} MB" : $"{Math.Max(b, 0) / 1e3:0} KB";
 }
