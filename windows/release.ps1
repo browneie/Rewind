@@ -1,4 +1,4 @@
-# Builds a self-contained, single-file Rewind.exe for x64 and ARM64 (no .NET install needed to run it),
+﻿# Builds a self-contained, single-file Rewind.exe for x64 and ARM64 (no .NET install needed to run it),
 # zips each into dist\, and builds an installer for each if Inno Setup is installed
 # (winget install JRSoftware.InnoSetup).  Usage: .\release.ps1 2.1.0
 # Rewind.exe and the installers are signed with the "Rewind Release" code-signing certificate from your

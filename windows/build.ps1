@@ -1,4 +1,4 @@
-# Builds windows\build\Rewind.exe for this PC. Needs the .NET 10 SDK.
+﻿# Builds windows\build\Rewind.exe for this PC. Needs the .NET 10 SDK.
 #   .\build.ps1             build
 #   .\build.ps1 -SelfTest   build, then run the capture → encode → replay → MP4 self-test
 param([switch]$SelfTest)

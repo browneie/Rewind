@@ -328,9 +328,11 @@ sealed class PointerPainter : IDisposable
         [MarshalAs(UnmanagedType.LPStr)] string entry, [MarshalAs(UnmanagedType.LPStr)] string target, uint flags1, uint flags2,
         out IntPtr code, out IntPtr errors);
 
-    static byte[] Compile(string entry, string target)
+    static byte[] Compile(string entry, string target) => Compile(Shader, entry, target);
+
+    public static byte[] Compile(string shader, string entry, string target)
     {
-        var src = System.Text.Encoding.ASCII.GetBytes(Shader);
+        var src = System.Text.Encoding.ASCII.GetBytes(shader);
         int hr = D3DCompile(src, (nuint)src.Length, null, IntPtr.Zero, IntPtr.Zero, entry, target, 1 << 15 /* optimization level 3 */, 0, out var code, out var errors);
         string? message = null;
         if (errors != IntPtr.Zero)
@@ -338,7 +340,7 @@ sealed class PointerPainter : IDisposable
             using var e = new Blob(errors);
             message = Marshal.PtrToStringAnsi(e.BufferPointer, (int)(nuint)e.BufferSize);
         }
-        if (hr < 0) throw new RewindException("Couldn't build the pointer shader: " + (message ?? $"0x{hr:X8}"));
+        if (hr < 0) throw new RewindException("Couldn't build a shader: " + (message ?? $"0x{hr:X8}"));
         using var blob = new Blob(code);
         var bytes = new byte[(int)(nuint)blob.BufferSize];
         Marshal.Copy(blob.BufferPointer, bytes, 0, bytes.Length);

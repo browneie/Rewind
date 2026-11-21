@@ -392,7 +392,9 @@ sealed class Controller
     {
         var w = engine.Warnings.FirstOrDefault();
         if (w == null) return;
-        if (w.Contains("access is off"))
+        if (w.StartsWith("Game capture"))
+            Toast.Show("Game capture is off for now", w, Sym.Warning, Theme.Orange, duration: 7);
+        else if (w.Contains("access is off"))
             Toast.Show("Microphone access is off", "Click to open Windows privacy settings, allow desktop apps, then try again.",
                 Sym.Lock, Theme.Orange, duration: 8, onClick: () => Native.OpenUrl("ms-settings:privacy-microphone"));
         else

@@ -237,6 +237,16 @@ sealed class SettingsContent : StackPanel
         captureFooter = Footer("");
         Section("What to capture", new[] { Row("Capture", appPicker) }, captureFooter);
 
+        var gameToggle = Toggle("Game capture (experimental)", s.GameCapture, v => s.GameCapture = v);
+        gameToggle.IsEnabled = ObsGameCapture.Available;
+        Section("Game capture", new[] { gameToggle }, Footer(ObsGameCapture.Available
+            ? "When you capture one app, Rewind takes each frame straight from the game with OBS Studio's game capture hook, " +
+              "like OBS's Game Capture: exclusive fullscreen works, and nothing on top of the game is recorded. Rewind keeps " +
+              "recording the window until the first game frame arrives. Games with kernel anti-cheat (Valorant, Fortnite, CS2, " +
+              "Easy Anti-Cheat and BattlEye games and more) are never hooked. Server screenshare checks will see OBS's hook in the game."
+            : "Game capture uses OBS Studio's game capture hook. Install OBS Studio (winget install OBSProject.OBSStudio) to turn it on" +
+              (System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture == System.Runtime.InteropServices.Architecture.X64 ? "." : " (it also needs the x64 version of Rewind).")));
+
         current = SettingsPage.Video;
         fallbackPicker = new ComboBox { MinWidth = 240 };
         fallbackPicker.DropDownOpened += (_, _) => FillFallback();

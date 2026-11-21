@@ -116,7 +116,8 @@ record struct CaptureSignature(
     Resolution Resolution,
     bool ShowCursor,
     bool SystemAudio,
-    bool Microphone);
+    bool Microphone,
+    bool GameCapture = false);
 
 static class CaptureMath
 {
@@ -262,6 +263,7 @@ sealed class Settings : INotifyPropertyChanged
         public VideoCodec Codec { get; set; } = VideoCodec.H264;
         public Resolution Resolution { get; set; } = Resolution.Native;
         public bool ShowCursor { get; set; } = true;
+        public bool GameCapture { get; set; }
         public bool SystemAudio { get; set; } = true;
         public bool Microphone { get; set; }
         public bool MixMicrophone { get; set; } = true;
@@ -362,6 +364,8 @@ sealed class Settings : INotifyPropertyChanged
     public VideoCodec Codec { get => d.Codec; set => Set(d.Codec, value, v => d.Codec = v); }
     public Resolution Resolution { get => d.Resolution; set => Set(d.Resolution, value, v => d.Resolution = v); }
     public bool ShowCursor { get => d.ShowCursor; set => Set(d.ShowCursor, value, v => d.ShowCursor = v); }
+    /// Capture a chosen app through OBS Studio's game capture hook (ObsGameCapture) instead of its window. Off by default.
+    public bool GameCapture { get => d.GameCapture; set => Set(d.GameCapture, value, v => d.GameCapture = v); }
     public bool SystemAudio { get => d.SystemAudio; set => Set(d.SystemAudio, value, v => d.SystemAudio = v); }
     public bool Microphone { get => d.Microphone; set => Set(d.Microphone, value, v => d.Microphone = v); }
     public bool MixMicrophone { get => d.MixMicrophone; set => Set(d.MixMicrophone, value, v => d.MixMicrophone = v); }
@@ -448,7 +452,7 @@ sealed class Settings : INotifyPropertyChanged
     public CaptureSignature CaptureSignature => new(
         DisplayId, CaptureAppId, CaptureAppName,
         AppRunning: CaptureAppId.Length > 0 && AppTarget.IsRunning(CaptureAppId),
-        Fps, Quality, CustomMbps, Codec, Resolution, ShowCursor, SystemAudio, Microphone);
+        Fps, Quality, CustomMbps, Codec, Resolution, ShowCursor, SystemAudio, Microphone, GameCapture);
 }
 
 

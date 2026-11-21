@@ -112,6 +112,8 @@ sealed class CaptureEngine
         Target? target;
         Duplicator? dup;
         Thread? dupThread;
+        ObsGameCapture? game;
+        Thread? gameThread;
         bool cantDuplicate, closedReported;
         Timer? watcher;
         readonly object switchLock = new();
@@ -125,6 +127,7 @@ sealed class CaptureEngine
             lock (frameLock)
             {
                 if (disposed || failed) return null;
+                if (game != null) return game.Own == null ? null : ReadBack(gpu!, game.Own, new SizeInt32 { Width = game.Width, Height = game.Height });
                 if (dup != null) return dup.Canvas == null ? null : ReadBack(gpu!, dup.Canvas, new SizeInt32 { Width = dup.Width, Height = dup.Height });
                 return heldTexture == null ? null : ReadBack(gpu!, heldTexture, lastContent);
             }
@@ -187,6 +190,7 @@ sealed class CaptureEngine
 
             if (!(Duplicates(target) && StartDuplication())) StartWgc();
             Log.Info(dup != null ? "capture: Desktop Duplication" : "capture: Windows.Graphics.Capture");
+            if (sig.GameCapture && target.Window != IntPtr.Zero && target.Pid != 0) StartGameCapture();
             // An app can go fullscreen or back to a window at any time.
             if (target.Window != IntPtr.Zero) watcher = new Timer(_ => Watch(), null, 250, 250);
             var source = AppName ?? Displays.All().FirstOrDefault(d => d.Handle == target.Monitor)?.Short ?? "Display";
@@ -214,6 +218,7 @@ sealed class CaptureEngine
                 if (disposed || failed || closedReported) return;
                 var t = target!;
                 if (!Native.IsWindow(t.Window)) { ReportClosed(); return; }
+                if (game != null) return; // game capture doesn't care whether the game is fullscreen
                 bool want = !cantDuplicate && Duplicates(t);
                 if (want && dup == null)
                 {
@@ -333,6 +338,111 @@ sealed class CaptureEngine
             }
         }
 
+        /// Game capture (opt-in) for a chosen app, through OBS's hook. The usual capture keeps recording until the hook
+        /// has shared its first frame, so trying it never leaves a gap in the replay; if the game can't be hooked,
+        /// nothing changes.
+        void StartGameCapture()
+        {
+            if (!ObsGameCapture.Available)
+            {
+                owner.Warnings.Add("Game capture needs OBS Studio installed, so window capture is used.");
+                return;
+            }
+            var t = target!;
+            var th = new Thread(() => TryGame(t)) { IsBackground = true, Name = "Game capture", Priority = ThreadPriority.AboveNormal };
+            gameThread = th;
+            th.Start();
+        }
+
+        void TryGame(Target t)
+        {
+            string name = AppName ?? "this app";
+            ObsGameCapture? g;
+            string why;
+            try { g = ObsGameCapture.TryStart(gpu!, t.Pid, t.Window, sig.Fps, out why); }
+            catch (Exception e) { Log.Error("game capture", e); g = null; why = e.Message; }
+            if (g == null)
+            {
+                if (disposed || failed) return;
+                Log.Info("game capture: " + why);
+                Toast.Show($"Game capture can't hook {name}", why + " Rewind keeps recording its window instead.", Sym.Warning, Theme.Orange, duration: 7);
+                return;
+            }
+            lock (switchLock)
+            {
+                if (disposed || failed) { g.Dispose(); return; }
+                lock (frameLock) game = g;
+                StopDuplication();
+                StopWgc();
+            }
+            Log.Info($"capture: switched to game capture ({g.Width}×{g.Height})");
+            GameLoop(g);
+        }
+
+        /// OBS's hook keeps the shared texture up to date; like OBS, Rewind reads it once per recorded frame.
+        void GameLoop(ObsGameCapture g)
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            long next = 0;
+            while (true)
+            {
+                long wait = next - clock.Elapsed.Ticks;
+                if (wait > 0) Thread.Sleep(TimeSpan.FromTicks(Math.Min(wait, Clock.Second / 100)));
+                if (clock.Elapsed.Ticks < next) continue;
+                next = clock.Elapsed.Ticks + interval;
+                lock (frameLock)
+                {
+                    if (disposed || failed || game != g) return;
+                    if (g.GameGone)
+                    {
+                        ThreadPool.QueueUserWorkItem(_ => FallBackFromGame(g, "The game stopped its capture."));
+                        return;
+                    }
+                    if (owner.Paused) continue;
+                    try
+                    {
+                        Arrived++;
+                        var tex = g.Copy();
+                        if (tex == null) { NoSurface++; continue; }
+                        Accepted++;
+                        var sample = converter!.Convert(tex, g.Width, g.Height);
+                        if (sample != null) encoder!.Encode(sample, Clock.Now);
+                        else NoSurface++;
+                    }
+                    catch (Exception e)
+                    {
+                        Log.Error("game capture frame", e);
+                        ThreadPool.QueueUserWorkItem(_ => FallBackFromGame(g, e.Message));
+                        return;
+                    }
+                }
+            }
+        }
+
+        void FallBackFromGame(ObsGameCapture g, string why)
+        {
+            lock (switchLock)
+            {
+                if (disposed || failed || game != g) return;
+                Log.Info("game capture stopped: " + why);
+                StopGame();
+                try { if (!(Duplicates(target!) && StartDuplication())) StartWgc(); }
+                catch (Exception e) { Fail(e); return; }
+                if (Native.IsWindow(target!.Window))
+                    Toast.Show($"Game capture stopped for {AppName ?? "this app"}", why + " Recording its window instead.", Sym.Warning, Theme.Orange, duration: 7);
+            }
+        }
+
+        void StopGame()
+        {
+            ObsGameCapture? g;
+            lock (frameLock) { g = game; game = null; }
+            var th = gameThread;
+            gameThread = null;
+            if (th != null && th != Thread.CurrentThread) th.Join(1000);
+            lock (frameLock) g?.Dispose();
+        }
+
         void FallBackToWgc(Duplicator d)
         {
             lock (switchLock)
@@ -405,6 +515,7 @@ sealed class CaptureEngine
                 foreach (var a in audio) a.Dispose();
                 audio.Clear();
                 lock (frameLock) disposed = true;
+                StopGame();
                 StopDuplication();
                 StopWgc();
                 encoder?.Dispose();
