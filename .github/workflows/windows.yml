@@ -1,5 +1,6 @@
 # Builds the Windows app on GitHub's Windows machines.
-#  - Pushes and pull requests that touch windows/: build it and run the self-test.
+#  - Pushes and pull requests that touch windows/: make sure it builds. (GitHub's Windows machines have no
+#    video hardware, so the self-test can't run there; run windows\build.ps1 -SelfTest on a real PC.)
 #  - Publishing a release (or running this by hand with a tag): build, sign with the "Rewind Release"
 #    certificate from the repository secrets WINDOWS_CERT_PFX (the .pfx as base64) and
 #    WINDOWS_CERT_PASSWORD, and attach the installers and zips to that release. The in-app updater only
@@ -34,10 +35,6 @@ jobs:
           dotnet-version: '10.0.x'
       - name: Build
         run: .\windows\build.ps1
-      - name: Self-test
-        run: |
-          .\windows\build\Rewind.exe --selftest "$env:RUNNER_TEMP\rewind-selftest" | Out-Host
-          exit $LASTEXITCODE
 
   release:
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
