@@ -4,6 +4,8 @@ import CoreMedia
 struct ReplaySnapshot {
     var video: [EncodedFrame]
     var audio: [AudioTrack: [CMSampleBuffer]]
+    /// What the clip's own sound is called: "All sound", or the captured app's name.
+    var soundName = SoundNames.all
 }
 
 /// Rolling in-memory buffer of already-encoded video plus raw audio, like ShadowPlay's Instant Replay.
@@ -14,6 +16,13 @@ final class ReplayBuffer: @unchecked Sendable {
     private var audio: [AudioTrack: [CMSampleBuffer]] = [:]
     private var videoBytes = 0
     private var _duration: Double = 120
+    private var _soundName = SoundNames.all
+
+    /// What the buffer's own sound is called (set when capture starts).
+    var soundName: String {
+        get { lock.lock(); defer { lock.unlock() }; return _soundName }
+        set { lock.lock(); _soundName = newValue; lock.unlock() }
+    }
 
     var duration: Double {
         get { lock.lock(); defer { lock.unlock() }; return _duration }
@@ -62,7 +71,7 @@ final class ReplayBuffer: @unchecked Sendable {
 
     func snapshot() -> ReplaySnapshot {
         lock.lock(); defer { lock.unlock() }
-        return ReplaySnapshot(video: video, audio: audio)
+        return ReplaySnapshot(video: video, audio: audio, soundName: _soundName)
     }
 
     func clear() {

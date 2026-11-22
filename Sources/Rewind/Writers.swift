@@ -24,15 +24,17 @@ enum ClipWriter {
                 writer.add(vin)
 
                 var jobs: [(AVAssetWriterInput, [CMSampleBuffer])] = [(vin, frames.map(\.sample))]
-                for track in AudioTrack.allCases {
+                var audioInputs: [AVAssetWriterInput] = []
+                // The clip's own sound first, then the microphone, then each app's (see SoundNames).
+                for track in snap.audio.keys.sorted() {
                     let samples = (snap.audio[track] ?? []).filter {
                         $0.presentationTimeStamp >= start && $0.presentationTimeStamp <= end
                     }
-                    guard let fmt = samples.first?.formatDescription else { continue }
-                    let ain = AVAssetWriterInput(mediaType: .audio, outputSettings: aacSettings(for: fmt))
-                    ain.expectsMediaDataInRealTime = false
-                    if writer.canAdd(ain) { writer.add(ain); jobs.append((ain, samples)) }
+                    guard let first = samples.first, let fmt = first.formatDescription else { continue }
+                    let ain = audioInput(fmt, aac: first.isAAC, name: track.name(main: snap.soundName))
+                    if writer.canAdd(ain) { writer.add(ain); jobs.append((ain, samples)); audioInputs.append(ain) }
                 }
+                SoundTracks.group(audioInputs, in: writer)
 
                 guard writer.startWriting() else { throw writer.error ?? RewindError("Couldn't start writing.") }
                 writer.startSession(atSourceTime: start)
@@ -74,11 +76,23 @@ enum ClipWriter {
     }
 }
 
+/// An audio input for a sound track: raw sound is encoded to AAC, app tracks (already AAC) are copied.
+private func audioInput(_ format: CMFormatDescription, aac: Bool, name: String, realTime: Bool = false) -> AVAssetWriterInput {
+    let input = aac ? AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: format)
+                    : AVAssetWriterInput(mediaType: .audio, outputSettings: aacSettings(for: format))
+    input.expectsMediaDataInRealTime = realTime
+    input.metadata = SoundTracks.metadata(name: name)
+    return input
+}
+
 /// A manual recording that's written to disk as it happens (video passed through, audio → AAC).
+/// It gets a track for each app that had one when it started; apps heard later are only in the clip's own sound
+/// (a file's tracks are fixed once writing starts).
 final class LiveRecorder: @unchecked Sendable {
     let url: URL
     private let lock = NSLock()
     private let wantedTracks: Set<AudioTrack>
+    private let soundName: String
     private var formats: [AudioTrack: CMFormatDescription]
     private var firstFrameTime: Double?
     /// Asks the encoder for a keyframe so the file can start right away.
@@ -91,9 +105,10 @@ final class LiveRecorder: @unchecked Sendable {
     private var finished = false
     private var failure: Error?
 
-    init(url: URL, tracks: Set<AudioTrack>, knownFormats: [AudioTrack: CMFormatDescription] = [:]) {
+    init(url: URL, tracks: Set<AudioTrack>, knownFormats: [AudioTrack: CMFormatDescription] = [:], soundName: String = SoundNames.all) {
         self.url = url
         self.wantedTracks = tracks
+        self.soundName = soundName
         self.formats = knownFormats.filter { tracks.contains($0.key) }
     }
 
@@ -136,12 +151,14 @@ final class LiveRecorder: @unchecked Sendable {
         vin.expectsMediaDataInRealTime = true
         guard w.canAdd(vin) else { throw RewindError("Can't write this video format to MP4.") }
         w.add(vin)
-        for t in wantedTracks.sorted(by: { $0.rawValue < $1.rawValue }) {
+        var inputs: [AVAssetWriterInput] = []
+        for t in wantedTracks.sorted() {
             guard let fmt = formats[t] else { continue }
-            let ain = AVAssetWriterInput(mediaType: .audio, outputSettings: aacSettings(for: fmt))
-            ain.expectsMediaDataInRealTime = true
-            if w.canAdd(ain) { w.add(ain); audioInputs[t] = ain }
+            let ain = audioInput(fmt, aac: CMFormatDescriptionGetMediaSubType(fmt) == kAudioFormatMPEG4AAC,
+                                 name: t.name(main: soundName), realTime: true)
+            if w.canAdd(ain) { w.add(ain); audioInputs[t] = ain; inputs.append(ain) }
         }
+        SoundTracks.group(inputs, in: w)
         guard w.startWriting() else { throw w.error ?? RewindError("Couldn't start writing.") }
         w.startSession(atSourceTime: start)
         writer = w

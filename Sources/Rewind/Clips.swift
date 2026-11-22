@@ -203,6 +203,38 @@ final class ClipPreview: ObservableObject {
     }
     /// 0…1 while converting, nil otherwise.
     @Published private(set) var convertProgress: Double?
+    /// Trim's Sound row: the clip's sounds, and which are switched on (see SoundTracks.sources).
+    @Published private(set) var sounds: [ClipSound] = []
+    @Published private(set) var soundsOn: Set<Int> = []
+    private var soundNames: [String] = []
+    /// nil keeps the clip's sound as recorded, empty saves none, several are mixed into one.
+    var soundChoice: [Int]? { sounds.isEmpty ? nil : SoundTracks.choose(sounds, on: soundsOn) }
+
+    func toggleSound(_ track: Int) {
+        if soundsOn.contains(track) { soundsOn.remove(track) } else { soundsOn.insert(track) }
+    }
+
+    private func loadSounds(_ url: URL) {
+        sounds = []
+        soundsOn = []
+        soundNames = []
+        Task {
+            let names = await SoundTracks.names(of: url)
+            guard self.item?.url == url else { return }
+            soundNames = names
+            sounds = SoundTracks.sources(names)
+            soundsOn = Set(sounds.filter(\.on).map(\.track))
+        }
+    }
+
+    /// Runs `work` on a hidden copy of `source` with only the chosen sound, removed afterwards.
+    fileprivate static func withSound(_ choice: [Int], names: [String], of source: URL,
+                                      _ work: (URL) async throws -> Void) async throws {
+        let tmp = source.deletingLastPathComponent().appendingPathComponent(".sound-\(UUID().uuidString).\(source.pathExtension)")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try await SoundTracks.rewrite(source, to: tmp, plan: SoundTracks.plan(for: choice, names: names))
+        try await work(tmp)
+    }
     let player = AVPlayer()
     weak var playerView: AVPlayerView?
 
@@ -261,6 +293,7 @@ final class ClipPreview: ObservableObject {
     func beginTrim() {
         guard canTrim, let view = playerView, let source = item else { return }
         player.pause()
+        loadSounds(source.url)
         isTrimming = true
         view.window?.makeFirstResponder(view) // so Return / Esc go to the trim bar
         view.beginTrimming { [weak self] result in
@@ -278,12 +311,17 @@ final class ClipPreview: ObservableObject {
 
     private func saveTrim(_ source: ClipItem, range: CMTimeRange) {
         let format = exportFormat
-        if format != .original { convert(source, range: range, format: format); return }
+        let choice = soundChoice, names = soundNames
+        if format != .original { convert(source, range: range, format: format, sound: choice, names: names); return }
         isSavingTrim = true
         let dest = ClipTrimmer.outputURL(for: source.url)
         Task {
             do {
-                try await ClipTrimmer.trim(source.url, range: range, to: dest)
+                if let choice {
+                    try await Self.withSound(choice, names: names, of: source.url) { try await ClipTrimmer.trim($0, range: range, to: dest) }
+                } else {
+                    try await ClipTrimmer.trim(source.url, range: range, to: dest)
+                }
                 isSavingTrim = false
                 ClipLibrary.shared.refresh()
                 if self.item == source { open(url: dest) }
@@ -329,7 +367,7 @@ enum ClipTrimmer {
 
 extension ClipPreview {
     /// Re-encodes the trimmed range (or the whole clip, if the handles weren't moved) into a new file.
-    fileprivate func convert(_ source: ClipItem, range: CMTimeRange, format: ExportFormat) {
+    fileprivate func convert(_ source: ClipItem, range: CMTimeRange, format: ExportFormat, sound: [Int]?, names: [String]) {
         isSavingTrim = true
         convertProgress = 0
         let quality = exportQuality
@@ -338,9 +376,12 @@ extension ClipPreview {
             let whole = range.start.seconds < 0.05 && range.end.seconds > duration - 0.05
             let dest = ClipTrimmer.outputURL(for: source.url, label: whole ? format.label : "trimmed, \(format.label)")
             do {
-                try await ClipConverter.convert(source.url, range: range, format: format, quality: quality, to: dest) { p in
-                    ClipPreview.shared.convertProgress = p
+                let run = { (from: URL) in
+                    try await ClipConverter.convert(from, range: range, format: format, quality: quality, to: dest) { p in
+                        ClipPreview.shared.convertProgress = p
+                    }
                 }
+                if let sound { try await Self.withSound(sound, names: names, of: source.url, run) } else { try await run(source.url) }
                 isSavingTrim = false
                 convertProgress = nil
                 ClipLibrary.shared.refresh()
@@ -375,6 +416,7 @@ struct ClipPane: View {
     @ObservedObject private var lib = ClipLibrary.shared
     @ObservedObject private var preview = ClipPreview.shared
     @ObservedObject private var settings = Settings.shared
+    @Environment(\.squareChrome) private var square
 
     private var screen: CGSize { NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900) }
 
@@ -433,8 +475,8 @@ struct ClipPane: View {
                 }
             }
             .frame(width: width, height: mediaHeight(item))
-            .clipShape(RoundedRectangle(cornerRadius: Theme.s(12), style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Theme.s(12), style: .continuous).strokeBorder(Theme.line))
+            .clipShape(RoundedRectangle(cornerRadius: square ? 0 : Theme.s(12), style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: square ? 0 : Theme.s(12), style: .continuous).strokeBorder(Theme.line))
 
             if item?.isVideo == true, preview.isTrimming || preview.convertProgress != nil {
                 SaveAsRow()
@@ -473,12 +515,13 @@ private struct ClipThumb: View {
     let item: ClipItem
     let width: CGFloat
     let selected: Bool
+    @Environment(\.squareChrome) private var square
     @ObservedObject private var lib = ClipLibrary.shared
     @State private var hover = false
 
     var body: some View {
         let height = width * 9 / 16
-        let shape = RoundedRectangle(cornerRadius: Theme.s(7), style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: square ? 0 : Theme.s(7), style: .continuous)
         Button { ClipPreview.shared.open(item) } label: {
             VStack(alignment: .leading, spacing: Theme.s(4)) {
                 ZStack {
@@ -526,6 +569,7 @@ private struct ClipThumb: View {
 /// Under the player while trimming: what to save the trimmed part as, and how hard to compress it.
 struct SaveAsRow: View {
     @ObservedObject private var preview = ClipPreview.shared
+    @Environment(\.squareChrome) private var square
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.s(6)) {
@@ -548,6 +592,7 @@ struct SaveAsRow: View {
                         HStack(spacing: Theme.s(8)) { quality }
                     }
                 }
+                if !preview.sounds.isEmpty { soundRow }
                 Text(preview.exportFormat == .original
                      ? "Drag the yellow handles, then click Trim. Saves without re-encoding; the original is kept."
                      : "Drag the handles (or leave them at the ends for the whole clip), then click Trim. Re-encodes into a new file; the original is kept.")
@@ -559,7 +604,8 @@ struct SaveAsRow: View {
 
     private var formats: some View {
         HStack(spacing: Theme.s(8)) {
-            Text("Save as").font(Theme.font(10.5, .semibold)).foregroundStyle(.secondary).fixedSize()
+            Text("Save as").font(Theme.font(10.5, .semibold)).foregroundStyle(.secondary).lineLimit(1)
+                .frame(width: labelWidth, alignment: .leading)
             HStack(spacing: Theme.s(3)) {
                 ForEach(ExportFormat.allCases) { f in formatButton(f) }
             }
@@ -576,13 +622,56 @@ struct SaveAsRow: View {
         }
     }
 
+    /// "Save as" and "Sound" are as wide as each other, so the chips after them line up.
+    private var labelWidth: CGFloat { Theme.s(44) }
+
+    private var soundRow: some View {
+        HStack(alignment: .top, spacing: Theme.s(8)) {
+            Text("Sound").font(Theme.font(10.5, .semibold)).foregroundStyle(.secondary).lineLimit(1)
+                .frame(width: labelWidth, alignment: .leading).padding(.top, Theme.s(3))
+            FlowLayout(spacing: Theme.s(4)) {
+                ForEach(preview.sounds) { soundChip($0) }
+                Text(soundNote).font(Theme.font(9.5)).foregroundStyle(.secondary).padding(.leading, Theme.s(2)).padding(.vertical, Theme.s(3.5))
+            }
+        }
+    }
+
+    private var soundNote: String {
+        switch preview.soundChoice {
+        case nil: "as recorded"
+        case let c? where c.isEmpty: "no sound"
+        case let c? where c.count == 1: "only this"
+        default: "mixed when saved"
+        }
+    }
+
+    private func soundChip(_ s: ClipSound) -> some View {
+        let on = preview.soundsOn.contains(s.track)
+        let icon = s.isMic ? (on ? "mic.fill" : "mic.slash.fill") : (on ? "speaker.wave.2.fill" : "speaker.slash.fill")
+        return Button { preview.toggleSound(s.track) } label: {
+            HStack(spacing: Theme.s(4)) {
+                Image(systemName: icon).font(.system(size: Theme.s(8.5), weight: .semibold))
+                    .foregroundStyle(on ? Theme.accent : Color.secondary)
+                Text(s.name).font(Theme.font(10, .semibold)).lineLimit(1).truncationMode(.middle)
+                    .strikethrough(!on).foregroundStyle(on ? Color.primary : Color.secondary)
+                    .frame(maxWidth: Theme.s(110), alignment: .leading).fixedSize(horizontal: true, vertical: false)
+            }
+            .padding(.horizontal, Theme.s(7)).padding(.vertical, Theme.s(3))
+            .background(RoundedRectangle(cornerRadius: square ? 0 : Theme.s(10)).fill(on ? Theme.accent.opacity(0.22) : Color.primary.opacity(0.05)))
+            .overlay(RoundedRectangle(cornerRadius: square ? 0 : Theme.s(10)).strokeBorder(on ? Theme.accent.opacity(0.9) : Color.primary.opacity(0.15)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(on ? "Leave \(s.name) out of the saved clip" : "Put \(s.name) in the saved clip")
+    }
+
     private func formatButton(_ f: ExportFormat) -> some View {
         let on = preview.exportFormat == f
         return Button { preview.exportFormat = f } label: {
             Text(f.label).font(Theme.font(10, .semibold)).lineLimit(1).fixedSize()
                 .padding(.horizontal, Theme.s(7)).padding(.vertical, Theme.s(3))
-                .background(Capsule().fill(on ? Theme.accent.opacity(0.3) : Color.primary.opacity(0.08)))
-                .overlay(Capsule().strokeBorder(on ? Theme.accent : .clear))
+                .background(RoundedRectangle(cornerRadius: square ? 0 : Theme.s(10)).fill(on ? Theme.accent.opacity(0.3) : Color.primary.opacity(0.08)))
+                .overlay(RoundedRectangle(cornerRadius: square ? 0 : Theme.s(10)).strokeBorder(on ? Theme.accent : .clear))
         }
         .buttonStyle(.plain)
         .help(f == .original ? "Keep the original video, no re-encoding" : "Re-encode as \(f.label)")
@@ -616,4 +705,42 @@ func timeAgo(_ date: Date, now: Date = Date()) -> String {
     if s < 3600 { return "\(s / 60)m ago" }
     if s < 86_400 { return "\(s / 3600)h ago" }
     return "\(s / 86_400)d ago"
+}
+
+/// Lays its views out left to right, wrapping onto new lines when the row is full (the trimmer's sound chips).
+struct FlowLayout: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(width: proposal.width ?? .infinity, subviews: subviews)
+        let height = rows.last.map { $0.y + $0.height } ?? 0
+        let widest = rows.map(\.width).max() ?? 0
+        return CGSize(width: proposal.width ?? widest, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for row in arrange(width: bounds.width, subviews: subviews) {
+            for (i, x) in row.items {
+                subviews[i].place(at: CGPoint(x: bounds.minX + x, y: bounds.minY + row.y), proposal: .unspecified)
+            }
+        }
+    }
+
+    private struct Row { var y: CGFloat; var height: CGFloat = 0; var width: CGFloat = 0; var items: [(Int, CGFloat)] = [] }
+
+    private func arrange(width: CGFloat, subviews: Subviews) -> [Row] {
+        var rows = [Row(y: 0)]
+        for (i, view) in subviews.enumerated() {
+            let size = view.sizeThatFits(.unspecified)
+            if rows[rows.count - 1].width > 0, rows[rows.count - 1].width + spacing + size.width > width {
+                let last = rows[rows.count - 1]
+                rows.append(Row(y: last.y + last.height + spacing))
+            }
+            let x = rows[rows.count - 1].width == 0 ? 0 : rows[rows.count - 1].width + spacing
+            rows[rows.count - 1].items.append((i, x))
+            rows[rows.count - 1].width = x + size.width
+            rows[rows.count - 1].height = max(rows[rows.count - 1].height, size.height)
+        }
+        return rows
+    }
 }

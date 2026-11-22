@@ -50,8 +50,20 @@ enum Resolution: Int, CaseIterable, Identifiable {
     var label: String { self == .native ? "Native" : "\(rawValue)p" }
 }
 
-enum AudioTrack: Int, CaseIterable {
-    case system = 0, mic = 1
+/// A sound track: the clip's own sound (everything, or the captured app's), the microphone, or one app's sound
+/// on its own (AppAudio). Sorted in the order they go into a file.
+enum AudioTrack: Hashable, Comparable, Sendable {
+    case system, mic
+    case app(String)
+
+    /// What the track is called in the file ("Discord", "Mic"). `main`: the name of the clip's own sound.
+    func name(main: String) -> String {
+        switch self {
+        case .system: main
+        case .mic: SoundNames.mic
+        case .app(let name): name
+        }
+    }
 }
 
 struct CaptureSignature: Equatable {

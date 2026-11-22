@@ -25,6 +25,7 @@ final class OverlayController {
     static let shared = OverlayController()
     private var panel: OverlayPanel?
     private var keyMonitor: Any?
+    private var switchObserver: NSObjectProtocol?
 
     var isVisible: Bool { panel != nil }
     func toggle() { isVisible ? hide() : show() }
@@ -57,6 +58,14 @@ final class OverlayController {
         NSAnimationContext.runAnimationGroup { $0.duration = 0.12; p.animator().alphaValue = 1 }
         panel = p
         DispatchQueue.main.async { withAnimation(OverlayState.slide) { OverlayState.shared.open = true } }
+        // Switching to another app (⌘Tab, the Dock, a notification) closes the overlay, like Esc.
+        let underneath = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        switchObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            guard let pid = app?.processIdentifier, pid != underneath, pid != ProcessInfo.processInfo.processIdentifier else { return }
+            MainActor.assumeIsolated { self?.hide() }
+        }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             let preview = ClipPreview.shared, state = OverlayState.shared
             if state.capturingKeys { return e }
@@ -82,6 +91,7 @@ final class OverlayController {
         guard let p = panel else { return }
         panel = nil
         if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
+        if let o = switchObserver { NSWorkspace.shared.notificationCenter.removeObserver(o); switchObserver = nil }
         withAnimation(OverlayState.slide) { OverlayState.shared.open = false }
         // Sidebar slides out first; the others just fade.
         let slideOut = Settings.shared.overlayLayout == .sidebar ? 0.3 : 0
@@ -213,12 +223,14 @@ struct OverlayView: View {
 
                     if let page = state.settings {
                         ClassicSettings(page: page)
+                            .environment(\.squareChrome, true)
                             .transition(.opacity.combined(with: .move(edge: .top)))
                     } else if gallery {
                         ClipPane(close: close, reservedHeight: Theme.s(300))
                             .padding(Theme.s(14))
                             .fixedSize()
                             .classicPanel()
+                            .environment(\.squareChrome, true)
                             .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 }
@@ -612,6 +624,7 @@ struct Chip: View {
     let icon: String
     let action: () -> Void
     @State private var hover = false
+    @Environment(\.squareChrome) private var square
     var body: some View {
         Button(action: action) {
             HStack(spacing: Theme.s(6)) {
@@ -619,7 +632,7 @@ struct Chip: View {
                 if let title { Text(title).font(Theme.font(12, .medium)) }
             }
             .padding(.horizontal, Theme.s(title == nil ? 9 : 12)).padding(.vertical, Theme.s(7))
-            .background(Capsule().fill(Color.white.opacity(hover ? 0.16 : 0.09)))
+            .background(RoundedRectangle(cornerRadius: square ? 0 : Theme.s(20)).fill(Color.white.opacity(hover ? 0.16 : 0.09)))
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }

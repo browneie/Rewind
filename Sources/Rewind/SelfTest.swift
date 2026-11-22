@@ -17,7 +17,8 @@ enum SelfTest {
         let router = MediaRouter()
         router.replay.duration = 3
         router.bufferReplay = true
-        let recorder = LiveRecorder(url: recURL, tracks: [.system, .mic])
+        let discord = AudioTrack.app("Discord") // an app with a track of its own (AAC, like AppTap's)
+        let recorder = LiveRecorder(url: recURL, tracks: [.system, .mic, discord])
         router.recorder = recorder
 
         let encoder: VideoEncoder
@@ -38,6 +39,8 @@ enum SelfTest {
                                        magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &afmt)
         let chunk = 1024
         var audioFrame: Int64 = 0
+        let pcmFormat = AVAudioFormat(cmAudioFormatDescription: afmt!)
+        guard let appEncoder = try? AACTrackEncoder(input: pcmFormat) else { print("FAIL AAC encoder"); return 1 }
         let base = CMClockGetTime(CMClockGetHostTimeClock())
 
         for i in 0..<(fps * seconds) {
@@ -54,6 +57,12 @@ enum SelfTest {
                    let m = makeAudio(fmt: afmt!, frames: chunk, startFrame: audioFrame, pts: apts, hz: 660)?.deepCopyAudio() {
                     router.audio(s, .system)
                     router.audio(m, .mic)
+                    if let app = makeAudio(fmt: afmt!, frames: chunk, startFrame: audioFrame, pts: apts, hz: 880),
+                       let pcm = AVAudioPCMBuffer(pcmFormat: pcmFormat, frameCapacity: AVAudioFrameCount(chunk)) {
+                        pcm.frameLength = AVAudioFrameCount(chunk)
+                        CMSampleBufferCopyPCMDataIntoAudioBufferList(app, at: 0, frameCount: Int32(chunk), into: pcm.mutableAudioBufferList)
+                        for sample in appEncoder.encode(pcm, pts: apts) { router.audio(sample, discord) }
+                    }
                 } else { print("FAIL audio copy"); return 1 }
                 audioFrame += Int64(chunk)
             }
@@ -78,18 +87,21 @@ enum SelfTest {
         if failed { return 1 }
 
         print(String(format: "buffered %.2fs (replay length 3s)", buffered))
-        for url in [clipURL, recURL] { if !inspect(url, audioTracks: 2) { failed = true } }
+        for url in [clipURL, recURL] {
+            if !inspect(url, audioTracks: 3) || !checkNames(url, ["All sound", "Mic", "Discord"]) { failed = true }
+        }
 
-        // Mixdown: both files should end up with one audio track, same length, in sync.
+        // Mixing the mic in: the first track becomes "All sound + Mic", the mic and the app keep their own.
         for url in [clipURL, recURL] {
             let sem = DispatchSemaphore(value: 0)
             nonisolated(unsafe) var mixError: Error?
-            Task { do { try await AudioMixdown.mixIfNeeded(url) } catch { mixError = error }; sem.signal() }
+            Task { do { try await SoundTracks.mixMic(url) } catch { mixError = error }; sem.signal() }
             sem.wait()
-            if let mixError { print("FAIL mixdown \(url.lastPathComponent): \(mixError)"); failed = true; continue }
-            print("after mixdown:", terminator: " ")
-            if !inspect(url, audioTracks: 1) { failed = true }
+            if let mixError { print("FAIL mixing the mic in \(url.lastPathComponent): \(mixError)"); failed = true; continue }
+            print("after mixing the mic in:", terminator: " ")
+            if !inspect(url, audioTracks: 3) || !checkNames(url, ["All sound + Mic", "Mic", "Discord"]) { failed = true }
         }
+        if !testSounds(recURL) { failed = true }
         if !testTrim(recURL) { failed = true }
         if !testConvert(recURL) { failed = true }
         if !testShare(recURL) { failed = true }
@@ -118,7 +130,7 @@ enum SelfTest {
                 sem.wait()
                 if let err { print("FAIL convert \(format.label) q\(q): \(err)"); ok = false; continue }
                 print("convert \(format.label) q\(q) (\(ClipConverter.word(for: q))) → ", terminator: "")
-                if !inspect(dest, audioTracks: 1) { ok = false }
+                if !inspect(dest, audioTracks: 3) { ok = false }
                 try? FileManager.default.removeItem(at: dest)
             }
         }
@@ -178,7 +190,7 @@ enum SelfTest {
         sem.wait()
         if let trimError { print("FAIL trim: \(trimError)"); return false }
         print(String(format: "trimmed to %.2fs (wanted 2.50s) → ", length), terminator: "")
-        var ok = inspect(dest, audioTracks: 1)
+        var ok = inspect(dest, audioTracks: 3) && checkNames(dest, ["All sound + Mic", "Mic", "Discord"])
         if abs(length - 2.5) > 0.1 { print("FAIL trim length"); ok = false }
         try? FileManager.default.removeItem(at: dest)
         return ok
@@ -259,7 +271,48 @@ enum SelfTest {
         return sb
     }
 
-    private static func inspect(_ url: URL, audioTracks: Int) -> Bool {
+    /// The trimmer's Sound row on a clip with the clip's own sound + mic, the mic, and Discord: the chips it
+    /// offers, and saving only the mic, only Discord, or the two mixed.
+    private static func testSounds(_ source: URL) -> Bool {
+        var ok = true
+        let names = wait { await SoundTracks.names(of: source) }
+        let sources = SoundTracks.sources(names)
+        let shown = sources.map { "\($0.name)\($0.on ? "" : " (off)")" }
+        print("sound chips:", shown.joined(separator: ", "))
+        if shown != ["Discord", "Mic"] { print("FAIL sound chips"); ok = false }
+        if SoundTracks.choose(sources, on: [1, 2]) != nil { print("FAIL as recorded should keep every track"); ok = false }
+        // [1, 2] is "as recorded" in the trimmer; mixing two tracks is checked through the plan directly.
+        for (on, want) in [([1], ["Mic"]), ([2], ["Discord"]), ([1, 2], ["Mic + Discord"]), ([], [])] as [([Int], [String])] {
+            let choice = on.count == 2 ? on : SoundTracks.choose(sources, on: Set(on)) ?? [-1]
+            let dest = source.deletingLastPathComponent().appendingPathComponent("selftest-sound-\(want.first ?? "none").mp4")
+            try? FileManager.default.removeItem(at: dest)
+            let err: Error? = wait {
+                do { try await SoundTracks.rewrite(source, to: dest, plan: SoundTracks.plan(for: choice, names: names)); return nil }
+                catch { return error }
+            }
+            if let err { print("FAIL saving sound \(want): \(err)"); ok = false; continue }
+            print("sound \(want.isEmpty ? "none" : want[0]):", terminator: " ")
+            if !inspect(dest, audioTracks: want.count, allowNoAudio: want.isEmpty) || !checkNames(dest, want) { ok = false }
+            try? FileManager.default.removeItem(at: dest)
+        }
+        return ok
+    }
+
+    private static func checkNames(_ url: URL, _ want: [String]) -> Bool {
+        let names = wait { await SoundTracks.names(of: url) }
+        if names != want { print("FAIL track names \(names), wanted \(want)"); return false }
+        return true
+    }
+
+    private static func wait<T>(_ work: @escaping @Sendable () async -> T) -> T {
+        let sem = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var result: T?
+        Task { result = await work(); sem.signal() }
+        sem.wait()
+        return result!
+    }
+
+    private static func inspect(_ url: URL, audioTracks: Int, allowNoAudio: Bool = false) -> Bool {
         let sem = DispatchSemaphore(value: 0)
         var ok = false
         Task {
@@ -282,7 +335,7 @@ enum SelfTest {
                 let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
                 print(String(format: "%@: %.2fs, %d video track(s), %d decoded frames, %d audio track(s) (audio %.2fs / video %.2fs), %d KB",
                              url.lastPathComponent, dur, v.count, frames, a.count, audioDur, videoDur, size / 1024))
-                ok = v.count == 1 && a.count == audioTracks && frames > 0 && dur > 0.5 && abs(audioDur - videoDur) < 0.25
+                ok = v.count == 1 && a.count == audioTracks && frames > 0 && dur > 0.5 && (allowNoAudio && a.isEmpty || abs(audioDur - videoDur) < 0.25)
             } catch { print("FAIL inspect \(url.lastPathComponent): \(error)") }
             sem.signal()
         }

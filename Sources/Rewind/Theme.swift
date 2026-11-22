@@ -157,3 +157,13 @@ extension View {
         modifier(PanelSurface(radius: radius, shadow: shadow))
     }
 }
+
+/// Classic's square look: set on everything inside the Classic layout (its gallery, settings, buttons, chips).
+private struct SquareChromeKey: EnvironmentKey { static let defaultValue = false }
+
+extension EnvironmentValues {
+    var squareChrome: Bool {
+        get { self[SquareChromeKey.self] }
+        set { self[SquareChromeKey.self] = newValue }
+    }
+}

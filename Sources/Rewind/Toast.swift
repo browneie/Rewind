@@ -103,6 +103,8 @@ private struct ToastView: View {
     var close: () -> Void = {}
     var button: (title: String, action: () -> Void)? = nil
     let action: () -> Void
+    /// Classic's style: square, near-black, with an edge in the notice's color.
+    private let classic = MainActor.assumeIsolated { Settings.shared.overlayLayout == .classic }
 
     var body: some View {
         HStack(spacing: Theme.s(12)) {
@@ -110,7 +112,7 @@ private struct ToastView: View {
                 .font(.system(size: Theme.s(16), weight: .bold))
                 .foregroundStyle(tint)
                 .frame(width: Theme.s(30), height: Theme.s(30))
-                .background(RoundedRectangle(cornerRadius: Theme.s(9), style: .continuous).fill(tint.opacity(0.22)))
+                .background(RoundedRectangle(cornerRadius: classic ? 0 : Theme.s(9), style: .continuous).fill(tint.opacity(0.22)))
             VStack(alignment: .leading, spacing: Theme.s(2)) {
                 Text(title).font(Theme.font(13, .semibold))
                 if let subtitle {
@@ -122,8 +124,8 @@ private struct ToastView: View {
                 Button(action: button.action) {
                     Text(button.title).font(Theme.font(11, .semibold))
                         .padding(.horizontal, Theme.s(10)).padding(.vertical, Theme.s(5))
-                        .background(Capsule().fill(Color.white.opacity(0.14)))
-                        .contentShape(Capsule())
+                        .background(RoundedRectangle(cornerRadius: classic ? 0 : Theme.s(20)).fill(Color.white.opacity(0.14)))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
@@ -142,12 +144,28 @@ private struct ToastView: View {
         .padding(.horizontal, Theme.s(14))
         .padding(.vertical, Theme.s(11))
         .frame(width: Theme.s(330))
-        .panelSurface(radius: Theme.s(Theme.radius * 0.6), shadow: false)
+        .modifier(ToastSurface(classic: classic, tint: tint))
         .shadow(color: .black.opacity(0.35), radius: Theme.s(14), y: Theme.s(6))
         .padding(Theme.s(16))
         .foregroundStyle(.white)
         .environment(\.colorScheme, .dark)
         .contentShape(Rectangle())
         .onTapGesture(perform: action)
+    }
+}
+
+private struct ToastSurface: ViewModifier {
+    let classic: Bool
+    let tint: Color
+
+    func body(content: Content) -> some View {
+        if classic {
+            content
+                .background(Rectangle().fill(Color(hex: 0x0B0B0B).opacity(0.96)))
+                .overlay(alignment: .leading) { Rectangle().fill(tint).frame(width: Theme.s(3)) }
+                .overlay(Rectangle().strokeBorder(Color.white.opacity(0.08)))
+        } else {
+            content.panelSurface(radius: Theme.s(Theme.radius * 0.6), shadow: false)
+        }
     }
 }

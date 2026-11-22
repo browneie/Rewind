@@ -50,20 +50,24 @@ enum ClipConverter {
     /// quality), and anything else is re-encoded at the original's bitrate (about the same size).
     /// With `bitrate` (bits per second), `quality` is ignored: the video is encoded at that average bitrate and
     /// scaled down when it's too low for the clip's size (for fitting a size limit, see ClipSharer).
+    /// `audio`: which sound tracks to keep (indexes; nil keeps every one, with their names).
     static func convert(_ source: URL, range: CMTimeRange, format: ExportFormat, quality: Int, to dest: URL,
-                        bitrate: Int? = nil, progress: @escaping @MainActor (Double) -> Void) async throws {
+                        bitrate: Int? = nil, audio: [Int]? = nil, progress: @escaping @MainActor (Double) -> Void) async throws {
         guard let codec = format.codecType else { throw RewindError("Nothing to convert to.") }
         let asset = AVURLAsset(url: source)
         guard let vTrack = try await asset.loadTracks(withMediaType: .video).first else {
             throw RewindError("This clip has no video.")
         }
-        let aTracks = try await asset.loadTracks(withMediaType: .audio)
+        let allAudio = try await asset.loadTracks(withMediaType: .audio)
+        let aTracks = audio.map { keep in keep.compactMap { allAudio.indices.contains($0) ? allAudio[$0] : nil } } ?? allAudio
+        let names = await SoundTracks.names(of: source)
+        let kept = audio ?? Array(allAudio.indices)
         let natural = try await vTrack.load(.naturalSize)
         let transform = try await vTrack.load(.preferredTransform)
         let fps = try await vTrack.load(.nominalFrameRate)
         let sourceBitrate = try await vTrack.load(.estimatedDataRate)
 
-        if quality >= 100, bitrate == nil {
+        if quality >= 100, bitrate == nil, audio == nil {
             let subtype = try await vTrack.load(.formatDescriptions).first.map { CMFormatDescriptionGetMediaSubType($0) }
             let same = switch codec {
             case .h264: subtype == kCMVideoCodecType_H264
@@ -122,19 +126,23 @@ enum ClipConverter {
         guard writer.canAdd(vIn) else { throw RewindError("Can't write \(format.label) at this size.") }
         writer.add(vIn)
 
-        // Audio: copied as-is (already AAC).
+        // Audio: copied as-is (already AAC), with the tracks' names; only the first plays by default.
         var jobs: [(AVAssetReaderOutput, AVAssetWriterInput, Bool)] = [(vOut, vIn, true)]
-        for track in aTracks {
+        var audioInputs: [AVAssetWriterInput] = []
+        for (n, track) in aTracks.enumerated() {
             let out = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
             out.alwaysCopiesSampleData = false
             let hint = try await track.load(.formatDescriptions).first
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: hint)
             input.expectsMediaDataInRealTime = false
+            if kept.indices.contains(n), names.indices.contains(kept[n]) { input.metadata = SoundTracks.metadata(name: names[kept[n]]) }
             guard reader.canAdd(out), writer.canAdd(input) else { continue }
             reader.add(out)
             writer.add(input)
+            audioInputs.append(input)
             jobs.append((out, input, false))
         }
+        SoundTracks.group(audioInputs, in: writer)
 
         guard reader.startReading() else { throw reader.error ?? RewindError("Couldn't read the clip.") }
         guard writer.startWriting() else { throw writer.error ?? RewindError("Couldn't start writing.") }

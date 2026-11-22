@@ -131,7 +131,8 @@ final class Controller: ObservableObject {
         var tracks: Set<AudioTrack> = []
         if settings.systemAudio { tracks.insert(.system) }
         if settings.microphone { tracks.insert(.mic) }
-        let rec = LiveRecorder(url: url, tracks: tracks, knownFormats: router.audioFormats)
+        tracks.formUnion(engine.appTracks) // apps heard right now get tracks of their own
+        let rec = LiveRecorder(url: url, tracks: tracks, knownFormats: router.audioFormats, soundName: engine.soundName)
         let engine = self.engine
         rec.requestKeyframe = { engine.forceKeyframe() }
         router.recorder = rec
@@ -172,11 +173,12 @@ final class Controller: ObservableObject {
         reconcile() // stops capture if replay is off, or applies settings that changed mid-recording
     }
 
-    /// Folds the mic track into the main one when that setting is on. Keeps separate tracks if it fails.
+    /// Folds the mic into the clip's own sound when that setting is on (the mic keeps a track of its own too).
+    /// Keeps the tracks separate if it fails.
     static func mixDown(_ url: URL, enabled: Bool) async {
         guard enabled else { return }
         do {
-            try await AudioMixdown.mixIfNeeded(url)
+            try await SoundTracks.mixMic(url)
         } catch {
             Toast.show("Kept separate audio tracks", "Mixing failed: \(error.localizedDescription)",
                        icon: "exclamationmark.triangle.fill", tint: .orange)
@@ -277,6 +279,7 @@ final class Controller: ObservableObject {
         }
         do {
             try await engine.start(sig)
+            router.replay.soundName = engine.soundName
             isCapturing = true
             runningSignature = sig
             captureInfo = engine.info

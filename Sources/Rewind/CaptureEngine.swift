@@ -23,6 +23,8 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
         let appName: String?
         /// The display the picture comes from.
         let displayID: CGDirectDisplayID
+        /// The captured app's processes (none for a display).
+        var pids: [pid_t] = []
     }
 
     /// What to capture. With an app chosen and running: only that app's windows (and audio), on the display
@@ -52,7 +54,7 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
                     AppTarget.key(bundleID: $0.bundleIdentifier, name: $0.applicationName) == appID
                 }
                 return Target(filter: SCContentFilter(display: display, including: apps, exceptingWindows: []),
-                              appName: app.applicationName, displayID: display.displayID)
+                              appName: app.applicationName, displayID: display.displayID, pids: apps.map(\.processID))
             }
         }
         let pid = ProcessInfo.processInfo.processIdentifier
@@ -65,6 +67,13 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
 
     /// Name of the app being captured right now, or nil for the whole display.
     private(set) var capturedApp: String?
+    /// Records each other app's sound on a track of its own while system audio is on.
+    private var appAudio: AppAudioWatcher?
+
+    /// What the clip's own sound track is called.
+    var soundName: String { capturedApp ?? SoundNames.all }
+    /// The apps with tracks of their own right now.
+    var appTracks: [AudioTrack] { appAudio?.tracks ?? [] }
 
     func start(_ sig: CaptureSignature) async throws {
         let target = try await Self.target(displayID: sig.displayID, appID: sig.appID)
@@ -109,6 +118,15 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
             throw error
         }
         capturedApp = target.appName
+        if sig.systemAudio {
+            appAudio = AppAudioWatcher(skipping: target.pids, onSample: { [weak self] sample, track in
+                self?.onAudio?(sample, track)
+            }, onProblem: { message in
+                Task { @MainActor in
+                    Toast.show("Apps aren't on tracks of their own", message, icon: "speaker.slash.fill", tint: .orange, duration: 6)
+                }
+            })
+        }
         let source: String
         if let app = target.appName { source = app } else {
             let id = target.displayID
@@ -118,6 +136,8 @@ final class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
     }
 
     func stop() async {
+        appAudio?.stop()
+        appAudio = nil
         guard let s = stream else { return }
         stream = nil
         try? await s.stopCapture()

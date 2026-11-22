@@ -62,7 +62,7 @@ final class ClipSharer: ObservableObject {
         let duration = try await asset.load(.duration)
         guard duration.seconds > 0 else { throw RewindError("This clip is empty.") }
         var audio = 0.0
-        for track in try await asset.loadTracks(withMediaType: .audio) {
+        if let track = try await asset.loadTracks(withMediaType: .audio).first { // only the clip's own sound is kept
             let rate = Double(try await track.load(.estimatedDataRate))
             audio += rate > 0 ? rate : 192_000
         }
@@ -78,7 +78,8 @@ final class ClipSharer: ObservableObject {
         let range = CMTimeRange(start: .zero, duration: duration)
         for attempt in 0..<2 {
             try? FileManager.default.removeItem(at: dest)
-            try await ClipConverter.convert(url, range: range, format: .h264, quality: 0, to: dest, bitrate: Int(video)) { p in
+            // Only the clip's own sound: what plays anyway, and the other tracks would only take up room.
+            try await ClipConverter.convert(url, range: range, format: .h264, quality: 0, to: dest, bitrate: Int(video), audio: [0]) { p in
                 progress(attempt == 0 ? p * 0.95 : 0.95 + p * 0.05)
             }
             let size = fileSize(dest)
