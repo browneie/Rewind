@@ -9,6 +9,8 @@ enum ClipTags {
         case game = "local.rewind.game"
         /// "replay", "recording", "screenshot" or "app": set when a clip is renamed, so Rewind still knows it.
         case kind = "local.rewind.kind"
+        /// Set once Free up space has shrunk a clip (or found it couldn't be made much smaller).
+        case shrunk = "local.rewind.shrunk"
     }
 
     static func get(_ url: URL, _ key: Key) -> String? {

@@ -402,6 +402,71 @@ sealed class SettingsContent : StackPanel
             shareCustomRow,
         }, Footer("Copy puts a clip on the clipboard to paste into Discord and the like. Bigger clips are shrunk to fit first; set this to your upload limit."));
 
+        // How much room clips take, and Free up space (ClipStorage).
+        var usage = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
+        usage.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
+        var free = new Button { Content = "Free up space…", HorizontalAlignment = HorizontalAlignment.Left };
+        var shrinkNow = new Button { Content = "Shrink", Margin = new Thickness(0, 0, 8, 0) };
+        var cancelShrink = new Button { Content = "Cancel" };
+        var confirmButtons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
+        confirmButtons.Children.Add(shrinkNow);
+        confirmButtons.Children.Add(cancelShrink);
+        var confirmText = new TextBlock { TextWrapping = TextWrapping.Wrap, MaxWidth = 460 };
+        var confirm = new StackPanel { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 4, 0, 0) };
+        confirm.Children.Add(confirmText);
+        confirm.Children.Add(confirmButtons);
+        var bar = new ProgressBar { Height = 4, Minimum = 0, Maximum = 1, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 8, 0, 0) };
+        var storageFooter = Footer("");
+        void ShowStorage()
+        {
+            int n = ClipStorage.Candidates.Count;
+            usage.Text = ClipStorage.Measured ? $"{Controller.SizeText(ClipStorage.Bytes)} in {ClipStorage.Count} clip{(ClipStorage.Count == 1 ? "" : "s")}" : "Measuring…";
+            if (ClipStorage.Progress is { } pr)
+            {
+                free.Content = "Stop";
+                free.IsEnabled = true;
+                confirm.Visibility = Visibility.Collapsed;
+                bar.Visibility = Visibility.Visible;
+                bar.Value = pr.Total == 0 ? 0 : (double)pr.Done / pr.Total;
+                storageFooter.Text = $"Shrinking {Math.Min(pr.Done + 1, pr.Total)} of {pr.Total}… {Controller.SizeText(ClipStorage.Freed)} freed so far.";
+            }
+            else
+            {
+                free.Content = "Free up space…";
+                free.IsEnabled = n > 0;
+                bar.Visibility = Visibility.Collapsed;
+                shrinkNow.Content = $"Shrink {n} clip{(n == 1 ? "" : "s")}";
+                confirmText.Text = $"Shrink {n} clip{(n == 1 ? "" : "s")} older than a week ({Controller.SizeText(ClipStorage.CandidateBytes)} now) into smaller HEVC files? " +
+                    "They keep their names and sound tracks. The originals go to the Recycle Bin, so you can get them back until you empty it. Renamed clips are left alone.";
+                storageFooter.Text = n == 0 && ClipStorage.Measured ? "Nothing older than a week left to shrink." : "";
+            }
+        }
+        free.Click += (_, _) =>
+        {
+            if (ClipStorage.Progress != null) ClipStorage.Stop();
+            else confirm.Visibility = Visibility.Visible;
+        };
+        shrinkNow.Click += (_, _) => { confirm.Visibility = Visibility.Collapsed; ClipStorage.Shrink(); };
+        cancelShrink.Click += (_, _) => confirm.Visibility = Visibility.Collapsed;
+        Action storageChanged = () => Dispatcher.BeginInvoke(ShowStorage);
+        ClipStorage.Changed += storageChanged;
+        Unloaded += (_, _) => ClipStorage.Changed -= storageChanged;
+        Loaded += (_, _) =>
+        {
+            ClipStorage.Changed -= storageChanged;
+            ClipStorage.Changed += storageChanged;
+            if (ClipStorage.Progress == null) ClipStorage.Measure();
+            ShowStorage();
+        };
+        ShowStorage();
+        Section("Storage", new[]
+        {
+            Row("Clips take up", usage),
+            Pad(free),
+            Pad(confirm),
+            Pad(bar),
+        }, storageFooter);
+
         current = SettingsPage.Overlay;
         BuildOverlaySection();
 

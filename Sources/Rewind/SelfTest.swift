@@ -105,6 +105,7 @@ enum SelfTest {
         if !testTrim(recURL) { failed = true }
         if !testConvert(recURL) { failed = true }
         if !testShare(recURL) { failed = true }
+        if !testShrink(recURL) { failed = true }
         if !testCleanup(dir: dir) { failed = true }
         if !testGames(dir: dir) { failed = true }
         if !testRename(dir: dir) { failed = true }
@@ -171,6 +172,56 @@ enum SelfTest {
             try? FileManager.default.removeItem(at: out)
         }
         return ok
+    }
+
+    /// Free up space: an old clip is listed, then shrunk to HEVC in place (same name, its sound tracks and game
+    /// kept, the original "in the Trash"), and not listed again.
+    private static func testShrink(_ source: URL) -> Bool {
+        let fm = FileManager.default
+        let d = source.deletingLastPathComponent().appendingPathComponent("shrink-test")
+        try? fm.removeItem(at: d)
+        try? fm.createDirectory(at: d.appendingPathComponent("trash"), withIntermediateDirectories: true)
+        let url = d.appendingPathComponent("Replay 2026-01-01 at 10.00.00.mp4")
+        try? fm.copyItem(at: source, to: url)
+        ClipTags.set(url, .game, "Minecraft")
+        let old = Date().addingTimeInterval(-30 * 86_400)
+        try? fm.setAttributes([.creationDate: old, .modificationDate: old], ofItemAtPath: url.path)
+        let before = ClipStorage.scan(d, prefixes: [], busy: nil)
+        let trash = d.appendingPathComponent("trash")
+        let result: Result<Int64, Error> = wait {
+            do {
+                // The synthetic clip barely shrinks, so any new file counts here: this checks the swap.
+                return .success(try await ClipStorage.shrinkOne(url, worthIt: 100) { u in
+                    let to = trash.appendingPathComponent(u.lastPathComponent)
+                    try FileManager.default.moveItem(at: u, to: to)
+                    return to
+                })
+            } catch { return .failure(error) }
+        }
+        let after = ClipStorage.scan(d, prefixes: [], busy: nil)
+        defer { try? fm.removeItem(at: d) }
+        switch result {
+        case .failure(let e): print("FAIL shrink: \(e)"); return false
+        case .success(var saved):
+            saved = max(saved, fm.fileExists(atPath: trash.appendingPathComponent(url.lastPathComponent).path) ? 1 : 0)
+            let codec = wait { () -> String in
+                let t = try? await AVURLAsset(url: url).loadTracks(withMediaType: .video).first
+                let f = try? await t?.load(.formatDescriptions).first
+                return f.map { ClipLibrary.codecName(CMFormatDescriptionGetMediaSubType($0)) } ?? "?"
+            }
+            print("shrink: \(before.candidates.count) candidate, saved \(saved / 1024) KB, now \(codec), " +
+                  "original kept in trash: \(fm.fileExists(atPath: trash.appendingPathComponent(url.lastPathComponent).path)), " +
+                  "candidates after: \(after.candidates.count) → ", terminator: "")
+            // A clip that wouldn't get much smaller is left as it is (and not offered again); either way it's not listed again.
+            var ok = before.candidates.count == 1 && after.candidates.isEmpty && fm.fileExists(atPath: url.path)
+            if saved > 0 {
+                ok = ok && codec == "HEVC" && ClipTags.get(url, .game) == "Minecraft"
+                    && fm.fileExists(atPath: trash.appendingPathComponent(url.lastPathComponent).path)
+                ok = inspect(url, audioTracks: 3) && checkNames(url, ["All sound + Mic", "Mic", "Discord"]) && ok
+            } else { print("kept as it was") }
+            if !ok { print("FAIL shrink") }
+            return ok
+        }
     }
 
     /// Cutting 1.2s–3.7s out of the 5s recording should give a 2.5s clip, without re-encoding.

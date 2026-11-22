@@ -595,6 +595,7 @@ struct SettingsPageView: View {
         if s.shareLimitCustom {
             NumberRow(title: "Custom limit", value: $s.shareLimitMB, range: Settings.shareLimitRange, unit: "MB")
         }
+        StorageRows()
         Note(text: s.autoCleanup
              ? "Replays, recordings and screenshots older than \(s.cleanupDays) \(s.cleanupDays == 1 ? "day" : "days") are moved to the Trash, so you can still get them back. Other files in the folder are never touched."
              : "Clips are kept until you delete them.")
@@ -846,5 +847,44 @@ struct NavItem: View {
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
+    }
+}
+
+/// Settings → Saving: how much room clips take, and Free up space (ClipStorage).
+private struct StorageRows: View {
+    @ObservedObject private var storage = ClipStorage.shared
+    @State private var confirming = false
+    @Environment(\.settingsStyle) private var st
+
+    private func size(_ b: Int64) -> String { ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
+
+    var body: some View {
+        let n = storage.candidates.count
+        VStack(alignment: .leading, spacing: 0) {
+            SRow(title: "Clips take up",
+                 hint: storage.measured ? "\(size(storage.bytes)) in \(storage.count) clip\(storage.count == 1 ? "" : "s")" : "Measuring…") {
+                if storage.isShrinking {
+                    SButton(title: "Stop") { storage.stop() }
+                } else {
+                    SButton(title: "Free up space…") { confirming = true }
+                        .disabled(n == 0).opacity(n == 0 ? 0.4 : 1)
+                        .help(n == 0 ? "No clips older than a week left to shrink" : "Shrink clips older than a week")
+                }
+            }
+            if let p = storage.progress {
+                ProgressView(value: Double(p.done), total: Double(max(p.total, 1))).tint(st.fill).padding(.top, 10)
+                Note(text: "Shrinking \(min(p.done + 1, p.total)) of \(p.total)… \(size(storage.freed)) freed so far.")
+            } else if confirming {
+                Note(text: "Shrink \(n) clip\(n == 1 ? "" : "s") older than a week (\(size(storage.candidateBytes)) now) into smaller HEVC files? " +
+                     "They keep their names and sound tracks. The originals go to the Trash, so you can get them back until you empty it. " +
+                     "Renamed clips are left alone.")
+                HStack(spacing: 8) {
+                    SButton(title: "Shrink \(n) clip\(n == 1 ? "" : "s")") { confirming = false; storage.shrink() }
+                    SButton(title: "Cancel") { confirming = false }
+                }
+                .padding(.bottom, 12)
+            }
+        }
+        .onAppear { if !storage.isShrinking { storage.measure() } }
     }
 }
