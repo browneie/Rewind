@@ -5,7 +5,28 @@ import SwiftUI
 
 /// A saved replay, recording or screenshot in the clips folder.
 struct ClipItem: Identifiable, Hashable {
-    enum Kind { case replay, recording, screenshot, app }
+    enum Kind {
+        case replay, recording, screenshot, app
+
+        var tag: String {
+            switch self {
+            case .replay: "replay"
+            case .recording: "recording"
+            case .screenshot: "screenshot"
+            case .app: "app"
+            }
+        }
+
+        init?(tag: String) {
+            switch tag {
+            case "replay": self = .replay
+            case "recording": self = .recording
+            case "screenshot": self = .screenshot
+            case "app": self = .app
+            default: return nil
+            }
+        }
+    }
 
     let url: URL
     let date: Date
@@ -22,19 +43,24 @@ struct ClipItem: Identifiable, Hashable {
         if name.hasPrefix("Screenshot ") || url.pathExtension.lowercased() == "png" { return .screenshot }
         if name.hasPrefix("Recording ") { return .recording }
         if name.hasPrefix("Replay ") { return .replay }
+        if let kind = ClipTags.get(url, .kind).flatMap(Kind.init(tag:)) { return kind }
         return .app
     }
+
+    /// Renamed in the overlay ("insane clutch"): shown by its name, and kept by auto-cleanup.
+    var isRenamed: Bool { ClipTags.get(url, .kind) != nil }
     var isVideo: Bool { kind != .screenshot }
 
     /// "Replay 22.19.19", "Roblox 16.53.58 (trimmed)": the kind or app, and the time from the file name.
     var displayName: String {
         let base = url.deletingPathExtension().lastPathComponent
-        guard let r = base.range(of: " at ") else { return base }
+        guard !isRenamed, let r = base.range(of: " at ") else { return base }
         return "\(kind == .screenshot ? (appName ?? "Screenshot") : title) \(base[r.upperBound...])"
     }
 
     var title: String {
-        switch kind {
+        if isRenamed { return url.deletingPathExtension().lastPathComponent }
+        return switch kind {
         case .replay: "Replay"
         case .recording: "Recording"
         case .screenshot: appName.map { "\($0) screenshot" } ?? "Screenshot"
@@ -112,7 +138,8 @@ final class ClipLibrary: ObservableObject {
             at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { return ([], [], false) }
         let skip = busy?.standardizedFileURL
         let all = files.compactMap { url -> ClipItem? in
-            guard Cleanup.isRewindFile(url.lastPathComponent, appPrefixes: appPrefixes), url.standardizedFileURL != skip,
+            guard Cleanup.isRewindFile(url.lastPathComponent, appPrefixes: appPrefixes) || ClipTags.get(url, .kind) != nil,
+                  url.standardizedFileURL != skip,
                   let v = try? url.resourceValues(forKeys: Set(keys)), v.isRegularFile == true else { return nil }
             return ClipItem(url: url, date: v.creationDate ?? v.contentModificationDate ?? .distantPast)
         }
@@ -196,6 +223,33 @@ final class ClipLibrary: ObservableObject {
         return (CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary), size)
     }
 
+    /// Renames a clip ("insane clutch.mp4"). It stays a Rewind clip (its kind and game go with it), and
+    /// auto-cleanup, which only looks for Rewind's own names, leaves it alone. Returns the new file.
+    @discardableResult
+    func rename(_ item: ClipItem, to name: String) -> URL? {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        let dir = item.url.deletingLastPathComponent(), ext = item.url.pathExtension
+        guard !clean.isEmpty, !clean.hasPrefix("."), clean != item.url.deletingPathExtension().lastPathComponent else { return nil }
+        var dest = dir.appendingPathComponent("\(clean).\(ext)")
+        var n = 2
+        while FileManager.default.fileExists(atPath: dest.path) {
+            dest = dir.appendingPathComponent("\(clean) \(n).\(ext)"); n += 1
+        }
+        // Noted before the move, so the file carries them: a new name can't say what kind of clip it is.
+        ClipTags.set(item.url, .kind, item.kind.tag)
+        if let game = item.game { ClipTags.set(item.url, .game, game) }
+        do {
+            try FileManager.default.moveItem(at: item.url, to: dest)
+        } catch {
+            ClipTags.set(item.url, .kind, nil)
+            Toast.error("Couldn't rename the clip", error)
+            return nil
+        }
+        refresh()
+        return dest
+    }
+
     func trash(_ item: ClipItem) {
         do {
             try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
@@ -230,6 +284,33 @@ final class ClipPreview: ObservableObject {
     /// nil keeps the clip's sound as recorded, empty saves none, several are mixed into one.
     var soundChoice: [Int]? { sounds.isEmpty ? nil : SoundTracks.choose(sounds, on: soundsOn) }
 
+    /// Renaming the selected clip: the text being typed.
+    @Published private(set) var renaming = false
+    @Published var renameText = ""
+
+    func beginRename() {
+        guard let item, !isTrimming, !isSavingTrim else { return }
+        renameText = item.isRenamed ? item.title : item.displayName
+        renaming = true
+        OverlayState.shared.capturingKeys = true // Space, arrows and Esc go to the text field
+    }
+
+    func endRename(save: Bool) {
+        guard renaming else { return }
+        renaming = false
+        OverlayState.shared.capturingKeys = false
+        guard save, let item, let dest = ClipLibrary.shared.rename(item, to: renameText) else { return }
+        // Same clip, new name: keep the player where it was.
+        let time = player.currentTime(), playing = player.timeControlStatus != .paused
+        let date = item.date
+        self.item = ClipItem(url: dest, date: date)
+        if item.isVideo {
+            player.replaceCurrentItem(with: AVPlayerItem(url: dest))
+            player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+            if playing { player.play() }
+        }
+    }
+
     func toggleSound(_ track: Int) {
         if soundsOn.contains(track) { soundsOn.remove(track) } else { soundsOn.insert(track) }
     }
@@ -260,6 +341,7 @@ final class ClipPreview: ObservableObject {
 
     func open(_ item: ClipItem, play: Bool = true) {
         if self.item == item { if play { togglePlay() }; return }
+        endRename(save: false)
         isTrimming = false
         self.item = item
         if item.isVideo {
@@ -276,6 +358,7 @@ final class ClipPreview: ObservableObject {
     }
 
     func close() {
+        endRename(save: false)
         isTrimming = false // a pending trim is ignored once the item changes
         player.pause()
         player.replaceCurrentItem(with: nil)
@@ -459,7 +542,7 @@ struct ClipPane: View {
                 if let item {
                     Image(systemName: item.icon).foregroundStyle(item.tint).font(Theme.font(13, .semibold))
                     VStack(alignment: .leading, spacing: 0) {
-                        Text(item.title).font(Theme.font(13, .semibold)).lineLimit(1)
+                        ClipTitle(item: item, font: Theme.font(13, .semibold), text: item.title)
                         Text(lib.details(item)).font(Theme.font(10.5)).foregroundStyle(Theme.muted).lineLimit(1)
                     }
                 } else {
@@ -474,6 +557,7 @@ struct ClipPane: View {
                     }
                     Chip(title: sharer.busy == item.url ? "\(Int(sharer.progress * 100))%" : nil, icon: "doc.on.clipboard") { sharer.copy(item.url) }
                         .help("Copy to paste into Discord or anywhere")
+                    Chip(title: nil, icon: "pencil") { preview.beginRename() }.help("Rename")
                     Chip(title: nil, icon: "folder") { let url = item.url; close(); reveal(url) }.help("Show in Finder")
                     Chip(title: nil, icon: "trash") { preview.close(); lib.trash(item) }.help("Move to Trash")
                 }
@@ -797,5 +881,32 @@ struct GameFilter: View {
         }
         .buttonStyle(.plain)
         .help(value == nil ? "Clips from every game" : value == ClipLibrary.other ? "Clips not from a game" : "Only \(label) clips")
+    }
+}
+
+/// A clip's name, or a text field while it's being renamed (Return saves, Esc cancels).
+struct ClipTitle: View {
+    let item: ClipItem
+    let font: Font
+    var text: String? = nil
+    @ObservedObject private var preview = ClipPreview.shared
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        if preview.renaming && preview.item == item {
+            TextField("Name", text: $preview.renameText)
+                .textFieldStyle(.plain).font(font).lineLimit(1)
+                .focused($focused)
+                .onSubmit { preview.endRename(save: true) }
+                .onExitCommand { preview.endRename(save: false) }
+                .onAppear { focused = true }
+                .padding(.horizontal, 5).padding(.vertical, 1)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.1)))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.accent.opacity(0.8)))
+                .frame(minWidth: 160)
+                .help("Return to save, Esc to cancel")
+        } else {
+            Text(text ?? item.displayName).font(font).lineLimit(1)
+        }
     }
 }

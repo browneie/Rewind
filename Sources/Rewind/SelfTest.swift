@@ -107,6 +107,7 @@ enum SelfTest {
         if !testShare(recURL) { failed = true }
         if !testCleanup(dir: dir) { failed = true }
         if !testGames(dir: dir) { failed = true }
+        if !testRename(dir: dir) { failed = true }
         return failed ? 1 : 0
     }
 
@@ -222,6 +223,30 @@ enum SelfTest {
         try? fm.removeItem(at: d)
         let ok = all.games == ["Minecraft", "Roblox"] && all.hasOther && roblox == [files[1].0] && other == [files[2].0]
         if !ok { print("FAIL games") }
+        return ok
+    }
+
+    /// A renamed clip is still listed as a Rewind replay of its game, shows its new name, and cleanup keeps it.
+    private static func testRename(dir: URL) -> Bool {
+        let fm = FileManager.default
+        let d = dir.appendingPathComponent("rename-test")
+        try? fm.removeItem(at: d)
+        try? fm.createDirectory(at: d, withIntermediateDirectories: true)
+        let url = d.appendingPathComponent("Replay 2026-01-01 at 10.00.00.mp4")
+        fm.createFile(atPath: url.path, contents: Data([0]))
+        ClipTags.set(url, .game, "Minecraft")
+        let renamed = MainActor.assumeIsolated {
+            ClipLibrary.shared.rename(ClipItem(url: url, date: Date()), to: "insane: clutch")
+        }
+        let listed = ClipLibrary.recent(in: d, excluding: nil).items.first
+        let removed = Cleanup.run(in: d, olderThan: 0, now: Date().addingTimeInterval(86_400 * 30)).count
+        print("renamed → \(renamed?.lastPathComponent ?? "nil"): \(listed?.title ?? "not listed"), \(listed.map { "\($0.kind)" } ?? "-"), " +
+              "game \(listed?.game ?? "none"), cleanup removed \(removed)")
+        // (a renamed clip's name and game live on the file, so they're checked before it's removed)
+        let ok = renamed?.lastPathComponent == "insane- clutch.mp4" && listed?.title == "insane- clutch" && listed?.kind == .replay
+            && listed?.game == "Minecraft" && removed == 0
+        try? fm.removeItem(at: d)
+        if !ok { print("FAIL rename") }
         return ok
     }
 

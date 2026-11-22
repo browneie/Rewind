@@ -155,7 +155,7 @@ struct ConsoleLayout: View {
         return VStack(spacing: 0) {
             HStack(spacing: 20) {
                 if let item {
-                    Text(item.displayName).font(.system(size: 15)).lineLimit(1).layoutPriority(1)
+                    ClipTitle(item: item, font: .system(size: 15)).layoutPriority(1)
                     Text(lib.details(item)).font(.system(size: 12, design: .monospaced)).foregroundStyle(Self.dim).lineLimit(1)
                 } else {
                     Text("Recent clips").font(.system(size: 15))
@@ -168,6 +168,7 @@ struct ConsoleLayout: View {
                                 .disabled(busy).opacity(busy ? 0.4 : 1)
                         }
                         TextButton(title: sharer.buttonTitle(for: item.url), color: Self.soft) { sharer.copy(item.url) }
+                        TextButton(title: "Rename", color: Self.soft) { preview.beginRename() }
                         TextButton(title: "Show in Finder", color: Self.soft) { let url = item.url; close(); reveal(url) }
                         TextButton(title: "Delete", color: Self.soft) { preview.close(); lib.trash(item) }
                     }
@@ -390,7 +391,7 @@ struct SidebarLayout: View {
                 if item?.isVideo == true, preview.isTrimming || preview.convertProgress != nil {
                     SaveAsRow().padding(.top, 10)
                 } else if let item {
-                    Text(item.displayName).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                    ClipTitle(item: item, font: .system(size: 14, weight: .semibold))
                         .padding(.top, 10)
                     Text(lib.details(item)).font(.system(size: 12, design: .monospaced)).foregroundStyle(p.muted)
                         .lineLimit(1).minimumScaleFactor(0.85).padding(.top, 3)
@@ -400,6 +401,7 @@ struct SidebarLayout: View {
                                 .disabled(preview.isSavingTrim)
                         }
                         TextButton(title: sharer.buttonTitle(for: item.url), color: p.muted, underline: true) { sharer.copy(item.url) }
+                        TextButton(title: "Rename", color: p.muted, underline: true) { preview.beginRename() }
                         TextButton(title: "Show in Finder", color: p.muted, underline: true) { let url = item.url; close(); reveal(url) }
                         TextButton(title: "Delete", color: p.muted, underline: true) { preview.close(); lib.trash(item) }
                     }

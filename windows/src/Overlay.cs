@@ -237,6 +237,8 @@ sealed class OverlayWindow : Window
     {
         // A hotkey field in Settings is waiting for keys: let it have them, Esc included.
         if (SettingsContent.IsRecording) return;
+        // Renaming a clip: the text box gets every key (Enter saves, Esc cancels).
+        if (pane?.IsRenaming == true) return;
         if (e.Key == Key.Escape)
         {
             // An open dropdown list closes first; otherwise Esc closes the overlay, from anywhere in it.

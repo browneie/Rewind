@@ -24,7 +24,11 @@ sealed record ClipItem(string FilePath, DateTime Date)
         Name.StartsWith("Screenshot ") || System.IO.Path.GetExtension(Name).Equals(".png", StringComparison.OrdinalIgnoreCase) ? Kinds.Screenshot
         : Name.StartsWith("Recording ") ? Kinds.Recording
         : Name.StartsWith("Replay ") ? Kinds.Replay
+        : ClipTags.Get(FilePath, ClipTags.Kind) is { } tag && Enum.TryParse<Kinds>(tag, true, out var kind) ? kind
         : Kinds.App;
+
+    /// Renamed in the overlay ("insane clutch"): shown by its name, and kept by auto-cleanup.
+    public bool IsRenamed => ClipTags.Get(FilePath, ClipTags.Kind) != null;
 
     public bool IsVideo => Kind != Kinds.Screenshot;
 
@@ -35,12 +39,12 @@ sealed record ClipItem(string FilePath, DateTime Date)
         {
             var name = System.IO.Path.GetFileNameWithoutExtension(FilePath);
             int at = name.IndexOf(" at ", StringComparison.Ordinal);
-            if (at < 0) return name;
+            if (at < 0 || IsRenamed) return name;
             return $"{(Kind == Kinds.Screenshot ? AppName ?? "Screenshot" : Title)} {name[(at + 4)..]}";
         }
     }
 
-    public string Title => Kind switch
+    public string Title => IsRenamed ? System.IO.Path.GetFileNameWithoutExtension(FilePath) : Kind switch
     {
         Kinds.Replay => "Replay",
         Kinds.Recording => "Recording",
@@ -76,6 +80,32 @@ static class ClipLibrary
     /// Which game's clips to show: null for all, `Other` for clips without a game.
     public static string? GameFilter { get; private set; }
     public const string Other = "\0other";
+
+    /// Renames a clip ("insane clutch.mp4"). It stays a Rewind clip (its kind and game go with it), and auto-cleanup,
+    /// which only looks for Rewind's own names, leaves it alone. Returns the new path. Stop playing it first.
+    public static string? Rename(ClipItem item, string name)
+    {
+        var clean = string.Join("-", name.Trim().Split(System.IO.Path.GetInvalidFileNameChars())).Trim().TrimEnd('.');
+        var dir = System.IO.Path.GetDirectoryName(item.FilePath)!;
+        var ext = System.IO.Path.GetExtension(item.FilePath);
+        if (clean.Length == 0 || clean.StartsWith('.') || clean == System.IO.Path.GetFileNameWithoutExtension(item.FilePath)) return null;
+        var dest = System.IO.Path.Combine(dir, clean + ext);
+        for (int n = 2; File.Exists(dest); n++) dest = System.IO.Path.Combine(dir, $"{clean} {n}{ext}");
+        // Noted before the move, so the file carries them: a new name can't say what kind of clip it is.
+        var game = item.Game;
+        ClipTags.Set(item.FilePath, ClipTags.Kind, item.Kind.ToString().ToLowerInvariant());
+        if (game != null) ClipTags.Set(item.FilePath, ClipTags.Game, game);
+        try { File.Move(item.FilePath, dest); }
+        catch (Exception e)
+        {
+            ClipTags.Set(item.FilePath, ClipTags.Kind, null);
+            Log.Error("rename", e);
+            Toast.Error("Couldn't rename the clip", e);
+            return null;
+        }
+        Refresh();
+        return dest;
+    }
 
     public static void Filter(string? game)
     {
@@ -435,6 +465,9 @@ sealed class ClipPane : StackPanel
     readonly Panel thumbs;
     /// The game filter's place, just above the thumbnails (see GameFilterRow).
     readonly Border filterHost = new();
+    /// Renaming the selected clip: its name is a text box until Enter (save) or Esc (cancel).
+    bool renaming;
+    public bool IsRenaming => renaming;
     // Thumbnails keep one size whatever the player size.
     readonly double gap = Theme.S(7), thumbW = Theme.S(88);
     ClipView? view;
@@ -544,6 +577,7 @@ sealed class ClipPane : StackPanel
             return;
         }
         if (view is { IsSaving: true }) return; // finish converting first
+        renaming = false;
         view?.Stop();
         lastSelected = item.FilePath;
         var (duration, size, _, _) = ClipLibrary.Probe(item);
@@ -614,6 +648,7 @@ sealed class ClipPane : StackPanel
             actions.Children.Add(new Chip(ClipSharer.IsBusy(item.FilePath) ? $"{(int)(ClipSharer.Progress * 100)}%" : null, Sym.Copy,
                     () => ClipSharer.Copy(item.FilePath))
                 { ToolTip = "Copy to paste into Discord or anywhere", Margin = new Thickness(Theme.S(8), 0, 0, 0) });
+            actions.Children.Add(new Chip(null, Sym.Rename, BeginRename) { ToolTip = "Rename", Margin = new Thickness(Theme.S(8), 0, 0, 0) });
             actions.Children.Add(new Chip(null, Sym.Folder, () => { var path = item.FilePath; close(); Controller.Reveal(path); })
                 { ToolTip = "Show in Explorer", Margin = new Thickness(Theme.S(8), 0, 0, 0) });
             actions.Children.Add(new Chip(null, Sym.Trash, () => Delete(item))
@@ -631,7 +666,7 @@ sealed class ClipPane : StackPanel
             DockPanel.SetDock(icon, Dock.Left);
             header.Children.Add(icon);
             var titles = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, Theme.S(8), 0) };
-            titles.Children.Add(Theme.Text(item.Title, 13, FontWeights.SemiBold));
+            titles.Children.Add(NameOf(item, Theme.Text(item.Title, 13, FontWeights.SemiBold)));
             titles.Children.Add(Theme.Text(ClipLibrary.Details(item), 10.5, brush: Theme.Muted));
             header.Children.Add(titles);
         }
@@ -641,6 +676,49 @@ sealed class ClipPane : StackPanel
             title.VerticalAlignment = VerticalAlignment.Center;
             header.Children.Add(title);
         }
+    }
+
+    public void BeginRename()
+    {
+        if (Item == null || IsBusy) return;
+        renaming = true;
+        RefreshChrome();
+    }
+
+    void EndRename(string? text)
+    {
+        if (!renaming) return;
+        renaming = false;
+        if (text != null && Item is { } item && view != null)
+        {
+            // The player holds the file open; let go of it, rename, and show it again under its new name.
+            view.Stop();
+            view = null;
+            lastSelected = null;
+            var dest = ClipLibrary.Rename(item, text);
+            Select(dest != null ? new ClipItem(dest, item.Date) : item, play: false);
+            if (dest != null) lastSelected = dest;
+            return;
+        }
+        RefreshChrome();
+    }
+
+    /// The clip's name, or a text box while it's being renamed.
+    FrameworkElement NameOf(ClipItem item, TextBlock shown)
+    {
+        if (!renaming || item != Item) return shown;
+        var box = new TextBox
+        {
+            Text = item.IsRenamed ? item.Title : item.DisplayName, FontSize = shown.FontSize, FontWeight = shown.FontWeight,
+            MinWidth = Theme.S(160), VerticalAlignment = VerticalAlignment.Center, ToolTip = "Enter to save, Esc to cancel",
+        };
+        box.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter) { e.Handled = true; EndRename(box.Text); }
+            else if (e.Key == Key.Escape) { e.Handled = true; EndRename(null); }
+        };
+        box.Loaded += (_, _) => { box.Focus(); box.SelectAll(); };
+        return box;
     }
 
     void Delete(ClipItem item)
@@ -663,6 +741,7 @@ sealed class ClipPane : StackPanel
         }
         list.Add(new TextLink(ClipSharer.ButtonTitle(item.FilePath), brush, 13, () => ClipSharer.Copy(item.FilePath), underline,
             "Copy to paste into Discord or anywhere"));
+        list.Add(new TextLink("Rename", brush, 13, BeginRename, underline) { IsEnabled = !IsBusy });
         list.Add(new TextLink("Show in Explorer", brush, 13, () => { var path = item.FilePath; close(); Controller.Reveal(path); }, underline));
         var del = new TextLink("Delete", brush, 13, () => Delete(item), underline, "Move to the Recycle Bin");
         del.IsEnabled = view is not { IsSaving: true };
@@ -690,7 +769,7 @@ sealed class ClipPane : StackPanel
         var left = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         if (item != null)
         {
-            left.Children.Add(Plain(item.DisplayName, 15, p.TextBrush));
+            left.Children.Add(NameOf(item, Plain(item.DisplayName, 15, p.TextBrush)));
             var d = Plain(ClipLibrary.Details(item), 12, p.MutedBrush, Theme.Mono);
             d.Margin = new Thickness(20, 0, 10, 0);
             left.Children.Add(d);
@@ -721,6 +800,7 @@ sealed class ClipPane : StackPanel
             }
             right.Children.Add(Square(ClipSharer.IsBusy(item.FilePath) ? $"{(int)(ClipSharer.Progress * 100)}%" : null, Sym.Copy,
                 () => ClipSharer.Copy(item.FilePath), "Copy to paste into Discord or anywhere"));
+            right.Children.Add(Square(null, Sym.Rename, BeginRename, "Rename"));
             right.Children.Add(Square(null, Sym.Folder, () => { var path = item.FilePath; close(); Controller.Reveal(path); }, "Show in Explorer"));
             var del = Square(null, Sym.Trash, () => Delete(item), "Move to the Recycle Bin");
             if (view.IsSaving) { del.IsEnabled = false; del.Opacity = 0.5; }
@@ -736,7 +816,7 @@ sealed class ClipPane : StackPanel
         {
             var name = Theme.Text(item.DisplayName, 12, FontWeights.SemiBold, p.TextBrush);
             name.VerticalAlignment = VerticalAlignment.Center;
-            left.Children.Add(name);
+            left.Children.Add(NameOf(item, name));
             var d = Theme.Text(ClipLibrary.Details(item), 10, brush: p.MutedBrush);
             d.VerticalAlignment = VerticalAlignment.Center;
             d.Margin = new Thickness(Theme.S(12), 0, Theme.S(10), 0);
@@ -753,8 +833,9 @@ sealed class ClipPane : StackPanel
         if (item == null || IsBusy) return;
         var name = Plain(item.DisplayName, 14, p.TextBrush);
         name.FontWeight = FontWeights.SemiBold;
-        name.Margin = new Thickness(0, 10, 0, 0);
-        info.Children.Add(name);
+        var shown = NameOf(item, name);
+        shown.Margin = new Thickness(0, 10, 0, 0);
+        info.Children.Add(shown);
         var details = Plain(ClipLibrary.Details(item), 12, p.MutedBrush, Theme.Mono);
         details.Margin = new Thickness(0, 3, 0, 0);
         info.Children.Add(details);
