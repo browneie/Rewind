@@ -61,6 +61,12 @@ extension Color {
                   blue: Double(hex & 0xFF) / 255)
     }
 
+    /// How light the color is, 0 (black) to 1 (white), as the eye sees it.
+    var luminance: Double {
+        guard let c = NSColor(self).usingColorSpace(.sRGB) else { return 0.5 }
+        return 0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent
+    }
+
     /// 0xRRGGBB in sRGB, for saving.
     var hexValue: UInt32? {
         guard let c = NSColor(self).usingColorSpace(.sRGB) else { return nil }

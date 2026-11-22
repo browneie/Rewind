@@ -349,7 +349,13 @@ struct SidebarLayout: View {
                                   line: Color(hex: 0x2E2D2A), rowLine: Color(hex: 0x252422), wash: .white)
     }
 
-    private let width: CGFloat = 470, pad: CGFloat = 30
+    private let pad: CGFloat = 30
+    /// Settings → Overlay → Player size sets the player's width; the panel is that plus its margins, at least
+    /// the old 470 and at most 60% of the screen.
+    private var width: CGFloat {
+        let screen = NSScreen.main?.frame.width ?? 1440
+        return min(max(CGFloat(s.playerSize) + pad * 2, 470), max(screen * 0.6, 470))
+    }
 
     var body: some View {
         let scheme = s.overlayAppearance.colorScheme
@@ -576,7 +582,7 @@ private struct SidebarAction: View {
             Text(title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                 .foregroundStyle(on ? p.bg : p.text)
             if let k = hover ? (hoverKey ?? key) : key {
-                Text(k).font(.system(size: 11, design: .monospaced)).foregroundStyle(on ? tint : p.muted).lineLimit(1)
+                Text(k).font(.system(size: 11, design: .monospaced)).foregroundStyle(keyColor).lineLimit(1)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -589,6 +595,13 @@ private struct SidebarAction: View {
     private func fire(_ f: () -> Void) {
         if flashOnTap { flash = true; withAnimation(.easeOut(duration: 0.35)) { flash = false } }
         f()
+    }
+
+    /// On a lit button the hotkey is in the accent color, unless that's too close to the button's own color
+    /// (a white accent on Dark's white button): then it's the panel color, dimmed.
+    private var keyColor: Color {
+        guard on else { return p.muted }
+        return abs(tint.luminance - p.text.luminance) < 0.3 ? p.bg.opacity(0.65) : tint
     }
 }
 

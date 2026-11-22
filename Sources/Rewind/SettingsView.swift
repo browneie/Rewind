@@ -663,8 +663,9 @@ struct SettingsPageView: View {
                 .overlay(alignment: .bottom) { Rectangle().fill(st.rowLine).frame(height: 1) }
         }
         SliderRow(title: "Dim the game", value: $s.overlayDim, range: 0...0.9)
-        if s.overlayLayout == .classic || s.overlayLayout == .panes {
-            SliderRow(title: "Player size", hint: s.overlayLayout == .classic ? "In the Gallery" : nil,
+        if s.overlayLayout != .console {
+            SliderRow(title: "Player size", hint: s.overlayLayout == .classic ? "In the Gallery"
+                                                  : s.overlayLayout == .sidebar ? "How wide the Sidebar is" : nil,
                       value: $s.playerSize, range: Theme.playerSizeRange, step: 10)
         }
         ToggleRow(title: "Show hotkeys in the overlay", isOn: $s.showHotkeys)

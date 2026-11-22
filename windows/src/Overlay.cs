@@ -609,7 +609,10 @@ sealed class OverlayWindow : Window
     /// A full-height panel that slides in from the right edge, in light or dark (Settings → Overlay).
     FrameworkElement BuildSidebar()
     {
-        const double width = 470, pad = 30;
+        const double pad = 30;
+        // Settings → Overlay → Player size sets the player's width; the panel is that plus its margins, at least
+        // the old 470 and at most 60% of the screen.
+        double width = Math.Min(Math.Max(Settings.Shared.PlayerSize + pad * 2, 470), Math.Max(screen.Width * 0.6, 470));
         var p = SidebarPalette();
         var panel = new DockPanel { LastChildFill = true };
         Border Line(Thickness t) => new() { BorderBrush = p.LineBrush, BorderThickness = t };
@@ -1204,13 +1207,18 @@ sealed class SidebarAction : ClickBorder
 
     protected override void Fired() { if (flashOnTap) Flash(flash); }
 
+    static double Luminance(Color c) => (0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B) / 255;
+
     protected override void Restyle()
     {
         var k = Hovering ? hoverKey ?? keyText : keyText;
         key.Text = k ?? "";
         key.Visibility = k == null ? Visibility.Collapsed : Visibility.Visible;
         title.Foreground = on ? Theme.Brush(p.Bg) : p.TextBrush;
-        key.Foreground = on ? Theme.Brush(tint) : p.MutedBrush;
+        // On a lit button the hotkey is in the accent color, unless that's too close to the button's own color
+        // (a white accent on Dark's white button): then it's the panel color, dimmed.
+        key.Foreground = !on ? p.MutedBrush
+            : Math.Abs(Luminance(tint) - Luminance(p.Text)) < 0.3 ? Theme.Brush(p.Bg, 0.65) : Theme.Brush(tint);
         Background = on ? p.TextBrush : p.WashBrush(Hovering ? 0.05 : 0);
     }
 }

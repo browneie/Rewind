@@ -687,7 +687,7 @@ sealed class SettingsContent : StackPanel
         dim.ValueChanged += (_, _) => { if (!building) s.OverlayDim = dim.Value; };
         var size = new Slider { Minimum = Theme.MinPlayerSize, Maximum = Theme.MaxPlayerSize, Width = 160, Value = s.PlayerSize, TickFrequency = 10, IsSnapToTickEnabled = true, SmallChange = 10, LargeChange = 50 };
         size.ValueChanged += (_, _) => { if (!building) s.PlayerSize = size.Value; };
-        var sizeRow = new StackPanel { Orientation = Orientation.Horizontal, ToolTip = "Width of the player in the Split layout and Classic's Gallery" };
+        var sizeRow = new StackPanel { Orientation = Orientation.Horizontal, ToolTip = "Width of the player in the Split layout, Classic's Gallery and the Sidebar" };
         sizeRow.Children.Add(new TextBlock { Text = "\ue7f4", FontFamily = Theme.Symbols, FontSize = 11, Opacity = 0.6, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
         sizeRow.Children.Add(size);
         sizeRow.Children.Add(new TextBlock { Text = "\ue7f4", FontFamily = Theme.Symbols, FontSize = 18, Opacity = 0.6, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) });
@@ -696,7 +696,7 @@ sealed class SettingsContent : StackPanel
         {
             if (!dim.IsMouseCaptureWithin) dim.Value = s.OverlayDim;
             if (!size.IsMouseCaptureWithin) size.Value = s.PlayerSize;
-            sizeRow.IsEnabled = s.OverlayLayout is OverlayLayout.Classic or OverlayLayout.Panes;
+            sizeRow.IsEnabled = s.OverlayLayout is OverlayLayout.Classic or OverlayLayout.Panes or OverlayLayout.Sidebar;
             sizeLabel.Opacity = sizeRow.IsEnabled ? 1 : 0.5;
         });
         var appearanceRow = Row("Appearance", Combo(Enum.GetValues<OverlayAppearance>().Select(a => (a.Label(), a)), s.OverlayAppearance, v => s.OverlayAppearance = v));
