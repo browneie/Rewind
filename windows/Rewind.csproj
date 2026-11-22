@@ -16,7 +16,7 @@
     <RootNamespace>Rewind</RootNamespace>
     <ApplicationIcon>Assets\Rewind.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>2.2.0</Version>
+    <Version>2.3.0</Version>
     <Product>Rewind</Product>
     <Description>ShadowPlay-style screen recorder</Description>
     <Copyright>MIT License</Copyright>

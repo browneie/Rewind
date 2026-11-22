@@ -1,6 +1,6 @@
 ﻿# Builds a self-contained, single-file Rewind.exe for x64 and ARM64 (no .NET install needed to run it),
 # zips each into dist\, and builds an installer for each if Inno Setup is installed
-# (winget install JRSoftware.InnoSetup).  Usage: .\release.ps1 2.2.0
+# (winget install JRSoftware.InnoSetup).  Usage: .\release.ps1 2.3.0
 # Rewind.exe and the installers are signed with the "Rewind Release" code-signing certificate from your
 # certificate store (make one with scripts\new-signing-cert.ps1). In-app updates only install an installer
 # signed with the same certificate as the copy that's running. -Unsigned skips signing.

@@ -26,7 +26,8 @@ permissions:
 
 jobs:
   check:
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    # A "release x.y.z" commit is built (and signed) by the release run that follows it, so it isn't checked twice.
+    if: (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'release ')) || github.event_name == 'pull_request'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
