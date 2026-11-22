@@ -100,6 +100,9 @@ sealed class OverlayWindow : Window
         ResizeMode = ResizeMode.NoResize;
         Opacity = 0;
         Title = "Rewind overlay";
+        // The layouts are sized ×1.35 (Theme.S), which puts text and edges between pixels: snapped, they stay sharp.
+        UseLayoutRounding = true;
+        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
 
         dim = new Border { Background = Theme.Brush(Colors.Black, Theme.Dim) };
         dim.MouseLeftButtonDown += (_, _) => { if (pane is { IsTrimming: true }) pane.CancelTrim(); else close(); };
@@ -122,6 +125,15 @@ sealed class OverlayWindow : Window
         cursorTick.Tick += (_, _) => UpdateCursor();
 
         PreviewKeyDown += OnKey;
+        // Alt-Tab, or clicking into another app, closes the overlay. Rewind's own dialogs (the folder picker,
+        // say) keep it open; so does a game grabbing focus back the moment the overlay appears.
+        var shown = System.Diagnostics.Stopwatch.StartNew();
+        Deactivated += (_, _) => Dispatcher.BeginInvoke(() =>
+        {
+            if (!IsVisible || IsActive || shown.ElapsedMilliseconds < 600) return;
+            if (Native.ProcessIsForeground((uint)Environment.ProcessId)) return;
+            close();
+        }, DispatcherPriority.Background);
         SourceInitialized += (_, _) =>
         {
             var hwnd = new WindowInteropHelper(this).Handle;
@@ -214,16 +226,24 @@ sealed class OverlayWindow : Window
         Build();
     }
 
+    static T? FindParent<T>(DependencyObject? o) where T : DependencyObject
+    {
+        while (o != null && o is not T)
+            o = o is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(o) : LogicalTreeHelper.GetParent(o);
+        return o as T;
+    }
+
     void OnKey(object sender, KeyEventArgs e)
     {
         // A hotkey field in Settings is waiting for keys: let it have them, Esc included.
         if (SettingsContent.IsRecording) return;
         if (e.Key == Key.Escape)
         {
+            // An open dropdown list closes first; otherwise Esc closes the overlay, from anywhere in it.
+            if (e.OriginalSource is DependencyObject o && FindParent<ComboBox>(o) is { IsDropDownOpen: true }) return;
+            if (e.OriginalSource is ComboBoxItem) return;
             e.Handled = true;
-            if (settingsPage != null) CloseSettings();
-            else if (pane is { IsTrimming: true }) pane.CancelTrim();
-            else close();
+            close();
             return;
         }
         if (settingsPage != null || pane == null || Keyboard.Modifiers != ModifierKeys.None) return;
@@ -259,10 +279,11 @@ sealed class OverlayWindow : Window
     }
 
     /// A page (or tab) of Settings in Windows' Fluent styles, dark or light.
-    SettingsContent MakeSettings(IEnumerable<SettingsPage> pages, bool dark, bool groupTitles = false)
+    SettingsContent MakeSettings(IEnumerable<SettingsPage> pages, bool dark, bool groupTitles = false, bool flat = false)
     {
-        var content = new SettingsContent(pages, inOverlay: true, groupTitles);
+        var content = new SettingsContent(pages, inOverlay: true, groupTitles, flat);
         SettingsContent.Themed(content, dark);
+        if (flat) SettingsContent.Accented(content, Theme.Accent);
         settingsContent = content;
         return content;
     }
@@ -810,12 +831,13 @@ sealed class OverlayWindow : Window
         if (settingsPage is { } page)
         {
             // Settings in the Gallery's place, as wide as the bar above.
-            var sheet = SettingsSheet(page, new Size(Math.Min(Theme.S(620), screen.Width - 80), Math.Min(Theme.S(440), screen.Height - Theme.S(300))));
-            galleryPane = new Border { Child = sheet, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, Theme.S(8), 0, 0) };
+            galleryPane = ClassicSettings(page, new Size(Math.Min(Theme.S(620), screen.Width - 80), Math.Min(Theme.S(440), screen.Height - Theme.S(300))));
+            galleryPane.HorizontalAlignment = HorizontalAlignment.Center;
+            galleryPane.Margin = new Thickness(0, Theme.S(8), 0, 0);
         }
         else
         {
-            pane = MakePane(reservedHeight: Theme.S(300));
+            pane = MakePane(reservedHeight: Theme.S(300), style: PaneStyle.Classic);
             galleryPane = ClassicPanel(pane, Theme.S(14));
             galleryPane.HorizontalAlignment = HorizontalAlignment.Center;
             galleryPane.Margin = new Thickness(0, Theme.S(8), 0, 0);
@@ -865,6 +887,63 @@ sealed class OverlayWindow : Window
 
     enum ClassicHover { None, Replay, Record, Screenshot }
 
+    /// Classic's Settings, in a square panel like the bar above it: the tabs along the top (the chosen one
+    /// underlined in the accent color), flat sections below.
+    Border ClassicSettings(SettingsPage page, Size size)
+    {
+        var tab = SettingsPages.Holding(page);
+        var head = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 0, 0, Theme.S(10)) };
+        var title = Theme.Text(Theme.SettingsLabel.ToUpperInvariant(), 12, FontWeights.Bold);
+        title.VerticalAlignment = VerticalAlignment.Center;
+        DockPanel.SetDock(title, Dock.Left);
+        head.Children.Add(title);
+        var x = new TextLink("", Theme.InkBrush, Theme.S(10), close, tip: "Close (Esc)") { FontFamily = Theme.Symbols };
+        DockPanel.SetDock(x, Dock.Right);
+        head.Children.Add(x);
+        var back = new TextLink("Back to clips", Theme.Muted, Theme.S(10.5), CloseSettings, tip: "Back (Esc)") { Margin = new Thickness(0, 0, Theme.S(16), 0) };
+        DockPanel.SetDock(back, Dock.Right);
+        head.Children.Add(back);
+
+        var tabs = new StackPanel { Orientation = Orientation.Horizontal };
+        foreach (var t in SettingsPages.Tabs)
+        {
+            bool on = t == tab;
+            var label = Theme.Text(t.Title(), 11.5, on ? FontWeights.SemiBold : FontWeights.Normal, on ? Theme.InkBrush : Theme.Muted);
+            var item = new Border
+            {
+                Child = label, Padding = new Thickness(0, 0, 0, Theme.S(7)), Margin = new Thickness(0, 0, Theme.S(22), -1),
+                BorderBrush = on ? Theme.Brush(Theme.Accent) : Brushes.Transparent, BorderThickness = new Thickness(0, 0, 0, 2),
+                Background = Brushes.Transparent, Cursor = Cursors.Hand,
+            };
+            var first = t.Pages()[0];
+            item.MouseEnter += (_, _) => { if (!on) label.Foreground = Theme.InkBrush; };
+            item.MouseLeave += (_, _) => { if (!on) label.Foreground = Theme.Muted; };
+            item.MouseLeftButtonDown += (_, e) => e.Handled = true;
+            item.MouseLeftButtonUp += (_, e) => { e.Handled = true; if (!on) OpenSettings(first); };
+            tabs.Children.Add(item);
+        }
+        var tabBar = new Border { Child = tabs, BorderBrush = Theme.Brush(Theme.Wash, 0.1), BorderThickness = new Thickness(0, 0, 0, 1) };
+
+        var foot = Theme.Text("Esc to go back · changes save straight away", 9.5, brush: Theme.Muted);
+        foot.Margin = new Thickness(0, Theme.S(10), 0, 0);
+        var pages = tab.Pages();
+        var content = MakeSettings(pages, dark: !Theme.Light, groupTitles: pages.Length > 1, flat: true);
+        content.Margin = new Thickness(0, Theme.S(4), Theme.S(6), 0);
+
+        var body = new DockPanel();
+        DockPanel.SetDock(head, Dock.Top);
+        DockPanel.SetDock(tabBar, Dock.Top);
+        DockPanel.SetDock(foot, Dock.Bottom);
+        body.Children.Add(head);
+        body.Children.Add(tabBar);
+        body.Children.Add(foot);
+        body.Children.Add(Scroll(content));
+        var panel = ClassicPanel(body, Theme.S(16));
+        panel.Width = size.Width;
+        panel.Height = size.Height;
+        return panel;
+    }
+
     // MARK: Shared pieces
 
     string SoundText() => $"Sound: {(s.SystemAudio ? "system" : "off")}{(s.Microphone ? " + mic" : "")}";
@@ -880,15 +959,22 @@ sealed class OverlayWindow : Window
     /// The overlay's dark rounded panel.
     static Grid Surface(UIElement child, double radius, double padding)
     {
+        // The fill and its shadow are a layer of their own behind the content: an effect on the panel itself would
+        // draw everything inside it (text included) through a soft intermediate bitmap.
+        var fill = new Border
+        {
+            CornerRadius = new CornerRadius(radius),
+            Background = Theme.Brush(Theme.PanelBase, Theme.Light ? 0.96 : Theme.PanelOpacity),
+            Effect = new DropShadowEffect { BlurRadius = Theme.S(40), ShadowDepth = Theme.S(15), Direction = 270, Opacity = 0.45, Color = Colors.Black },
+        };
         var panel = new Border
         {
             Padding = new Thickness(padding),
-            CornerRadius = new CornerRadius(radius),
-            Background = Theme.Brush(Theme.PanelBase, Theme.Light ? 0.96 : Theme.PanelOpacity),
+            CornerRadius = fill.CornerRadius,
+            Background = Brushes.Transparent, // still catches clicks, so they don't close the overlay
             BorderBrush = Theme.Line,
             BorderThickness = new Thickness(1),
             Child = child,
-            Effect = new DropShadowEffect { BlurRadius = Theme.S(40), ShadowDepth = Theme.S(15), Direction = 270, Opacity = 0.45, Color = Colors.Black },
         };
         var sheen = new Border
         {
@@ -896,6 +982,7 @@ sealed class OverlayWindow : Window
             BorderBrush = new LinearGradientBrush(Color.FromArgb(18, 255, 255, 255), Colors.Transparent, 90),
         };
         var g = new Grid();
+        g.Children.Add(fill);
         g.Children.Add(panel);
         g.Children.Add(sheen);
         return g;

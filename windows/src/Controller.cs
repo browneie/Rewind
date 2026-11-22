@@ -33,6 +33,7 @@ sealed class Controller
     {
         engine.OnVideo = Router.Video;
         engine.OnAudio = Router.Audio;
+        engine.OnAppAudio = Router.AppAudio;
         engine.OnStop = e => ui.BeginInvoke(() => CaptureDied(e));
         engine.OnTargetClosed = () => ui.BeginInvoke(() => { if (!Recording) ScheduleRetarget(0.5, force: true); });
         Router.Replay.Duration = settings.ReplaySeconds;

@@ -70,8 +70,23 @@ sealed class Gpu : IDisposable
     static readonly Guid IID_IGraphicsCaptureItem = new("79C3F95B-31F7-4EC2-A464-632EF5D30760");
     static readonly Guid IID_IDirect3DDxgiInterfaceAccess = new("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1");
 
-    public static GraphicsCaptureItem ItemForMonitor(IntPtr hmonitor) => CreateItem(hmonitor, forWindow: false);
-    public static GraphicsCaptureItem ItemForWindow(IntPtr hwnd) => CreateItem(hwnd, forWindow: true);
+    public static GraphicsCaptureItem ItemForMonitor(IntPtr hmonitor) => Retrying(() => CreateItem(hmonitor, forWindow: false));
+    public static GraphicsCaptureItem ItemForWindow(IntPtr hwnd) => Retrying(() => CreateItem(hwnd, forWindow: true));
+
+    /// Windows' capture service sometimes drops its connection ("The pipe has been ended", ERROR_BROKEN_PIPE), for
+    /// one when another copy of Rewind just quit; asking again a moment later works.
+    static GraphicsCaptureItem Retrying(Func<GraphicsCaptureItem> create)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            try { return create(); }
+            catch (COMException e) when (attempt < 4 && e.HResult == unchecked((int)0x8007006D))
+            {
+                Log.Info($"capture item: the capture service dropped the connection, trying again ({attempt})");
+                Thread.Sleep(400 * attempt);
+            }
+        }
+    }
 
     /// IGraphicsCaptureItemInterop::CreateForWindow / CreateForMonitor, called through the vtable.
     static unsafe GraphicsCaptureItem CreateItem(IntPtr handle, bool forWindow)

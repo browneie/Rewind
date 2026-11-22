@@ -16,6 +16,8 @@ sealed class Mp4Muxer : IDisposable
         public int SampleRate, Channels, Bitrate;
         public byte[]? AudioConfig;
         public long EditMediaTime, DelaySamples;
+        public string Name = "";
+        public bool Omitted;
         public readonly List<int> Sizes = new();
         public readonly List<long> Offsets = new();
         public readonly List<long> Dts = new();
@@ -69,13 +71,15 @@ sealed class Mp4Muxer : IDisposable
         return tracks.Count - 1;
     }
 
-    public int AddAudio(int sampleRate, int channels, int bitrate, byte[] audioSpecificConfig, long editMediaTime = 0, long delaySamples = 0)
+    /// `name` is what players list the track as ("Discord", "Mic").
+    public int AddAudio(int sampleRate, int channels, int bitrate, byte[] audioSpecificConfig, long editMediaTime = 0, long delaySamples = 0,
+                        string name = "")
     {
         var t = new Track
         {
             Id = tracks.Count + 1, IsVideo = false, Timescale = sampleRate, SampleRate = sampleRate, Channels = channels,
             Bitrate = bitrate, AudioConfig = audioSpecificConfig, LastDuration = 1024,
-            EditMediaTime = editMediaTime, DelaySamples = delaySamples,
+            EditMediaTime = editMediaTime, DelaySamples = delaySamples, Name = name,
         };
         tracks.Add(t);
         return tracks.Count - 1;
@@ -108,6 +112,9 @@ sealed class Mp4Muxer : IDisposable
     }
 
     public int SampleCount(int track) => tracks[track].Dts.Count;
+
+    /// Leaves a track out of the file (its samples stay behind as unused bytes).
+    public void Omit(int track) => tracks[track].Omitted = true;
 
     public double VideoSeconds => tracks.FirstOrDefault(t => t.IsVideo) is { } v ? v.Duration / (double)v.Timescale : 0;
 
@@ -181,23 +188,27 @@ sealed class Mp4Muxer : IDisposable
     {
         uint now = MacTime();
         var b = new Box();
-        long movieDuration = tracks.Count == 0 ? 0 : tracks.Max(t => t.Presentation * 1000 / t.Timescale);
+        var kept = tracks.Where(t => !t.Omitted).ToList();
+        long movieDuration = kept.Count == 0 ? 0 : kept.Max(t => t.Presentation * 1000 / t.Timescale);
+        var firstAudio = kept.FirstOrDefault(t => !t.IsVideo);
         b.Begin("moov");
         b.Full("mvhd", 0, 0).U32(now).U32(now).U32(1000).U32((uint)movieDuration)
             .U32(0x00010000).U16(0x0100).Zeros(10).Matrix().Zeros(24).U32((uint)(tracks.Count + 1)).End();
-        foreach (var t in tracks) BuildTrak(b, t, now, shift);
+        // Only the first sound track plays by default; the rest are alternatives (one group), so players that
+        // play every enabled track don't play the same sound several times over.
+        foreach (var t in kept) BuildTrak(b, t, now, shift, enabled: t.IsVideo || t == firstAudio);
         b.End();
         return b.ToArray();
     }
 
-    void BuildTrak(Box b, Track t, uint now, long shift)
+    void BuildTrak(Box b, Track t, uint now, long shift, bool enabled)
     {
         long dur = t.Duration;
         long movieDur = t.Presentation * 1000 / t.Timescale;
         int w = t.Video?.Width ?? 0, h = t.Video?.Height ?? 0;
         b.Begin("trak");
-        b.Full("tkhd", 0, 3).U32(now).U32(now).U32((uint)t.Id).U32(0).U32((uint)movieDur).Zeros(8)
-            .U16(0).U16(0).U16(t.IsVideo ? (ushort)0 : (ushort)0x0100).U16(0).Matrix()
+        b.Full("tkhd", 0, enabled ? 3u : 2u).U32(now).U32(now).U32((uint)t.Id).U32(0).U32((uint)movieDur).Zeros(8)
+            .U16(0).U16(t.IsVideo ? (ushort)0 : (ushort)1).U16(t.IsVideo ? (ushort)0 : (ushort)0x0100).U16(0).Matrix()
             .U32((uint)w << 16).U32((uint)h << 16).End();
         if (t.EditMediaTime > 0 || t.DelaySamples > 0)
         {
@@ -213,7 +224,7 @@ sealed class Mp4Muxer : IDisposable
         else
             b.Full("mdhd", 0, 0).U32(now).U32(now).U32((uint)t.Timescale).U32((uint)dur).U16(0x55C4).U16(0).End();
         b.Full("hdlr", 0, 0).U32(0).Fourcc(t.IsVideo ? "vide" : "soun").Zeros(12)
-            .Bytes(Encoding.ASCII.GetBytes(t.IsVideo ? "VideoHandler\0" : "SoundHandler\0")).End();
+            .Bytes(Encoding.UTF8.GetBytes((t.IsVideo ? "VideoHandler" : t.Name.Length > 0 ? t.Name : "SoundHandler") + "\0")).End();
         b.Begin("minf");
         if (t.IsVideo) b.Full("vmhd", 0, 1).U16(0).U16(0).U16(0).U16(0).End();
         else b.Full("smhd", 0, 0).U16(0).U16(0).End();

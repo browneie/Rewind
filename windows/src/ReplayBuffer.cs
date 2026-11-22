@@ -1,6 +1,6 @@
 namespace Rewind;
 
-sealed record AudioPackets(long Origin, List<(long Index, byte[] Data)> Packets);
+sealed record AudioPackets(long Origin, List<(long Index, byte[] Data)> Packets, string Name = "");
 
 sealed record ReplaySnapshot(List<EncodedFrame> Video, List<AudioPackets> Audio);
 
@@ -15,6 +15,18 @@ sealed class ReplayBuffer
     List<(long Index, byte[] Data)>[] packets = { new(), new() };
     static readonly long PumpInterval = Clock.Second / 4;
     long lastPump;
+
+    /// An app's own track: encoded from when it first made sound. `Loud` notes when it was heard (every half
+    /// second at most), so a clip only gets the tracks of apps heard in it.
+    sealed class AppTrack(string name, long origin) : IDisposable
+    {
+        public readonly string Name = name;
+        public readonly AudioPipeline Pipeline = new(new[] { new[] { AudioTrack.System } }, origin);
+        public readonly List<(long Index, byte[] Data)> Packets = new();
+        public readonly List<long> Loud = new();
+        public void Dispose() => Pipeline.Dispose();
+    }
+    readonly Dictionary<uint, AppTrack> apps = new();
 
     public double Duration
     {
@@ -40,6 +52,8 @@ sealed class ReplayBuffer
         pipeline?.Dispose();
         pipeline = null;
         packets = groups.Select(_ => new List<(long, byte[])>()).ToArray();
+        foreach (var a in apps.Values) a.Dispose();
+        apps.Clear();
         audioBytes = 0;
     }
 
@@ -56,11 +70,9 @@ sealed class ReplayBuffer
             }
             video.Add(frame);
             videoBytes += frame.Size;
-            if (pipeline != null)
-            {
-                pipeline.NoteMedia(frame.Pts);
-                PumpLocked(force: false);
-            }
+            pipeline?.NoteMedia(frame.Pts);
+            foreach (var a in apps.Values) a.Pipeline.NoteMedia(frame.Pts);
+            PumpLocked(force: false);
             TrimLocked();
         }
     }
@@ -76,12 +88,36 @@ sealed class ReplayBuffer
         }
     }
 
+    public void AppendAppAudio(AudioChunk chunk, AppSound app)
+    {
+        lock (gate)
+        {
+            bool loud = AppSound.IsLoud(chunk);
+            if (!apps.TryGetValue(app.Pid, out var t))
+            {
+                if (!loud || video.Count == 0) return;
+                apps[app.Pid] = t = new AppTrack(app.Name, chunk.Pts);
+            }
+            t.Pipeline.Add(chunk, AudioTrack.System);
+            if (loud && (t.Loud.Count == 0 || chunk.Pts - t.Loud[^1] > Clock.Second / 2)) t.Loud.Add(chunk.Pts);
+            PumpLocked(force: false);
+        }
+    }
+
     void PumpLocked(bool force)
     {
         long now = Clock.Now;
-        if (pipeline == null || (!force && now - lastPump < PumpInterval)) return;
+        if ((pipeline == null && apps.Count == 0) || (!force && now - lastPump < PumpInterval)) return;
         lastPump = now;
-        pipeline.Pump(EmitLocked, now);
+        pipeline?.Pump(EmitLocked, now);
+        long keep = (long)((duration + 2) * Audio.Rate / Audio.AacFrame);
+        foreach (var a in apps.Values)
+            a.Pipeline.Pump((_, index, data) =>
+            {
+                a.Packets.Add((index, data));
+                audioBytes += data.Length;
+                TrimPacketsLocked(a.Packets, index - keep);
+            }, now);
     }
 
     void EmitLocked(int group, long index, byte[] data)
@@ -89,7 +125,7 @@ sealed class ReplayBuffer
         packets[group].Add((index, data));
         audioBytes += data.Length;
         long keep = (long)((duration + 2) * Audio.Rate / Audio.AacFrame);
-        TrimPacketsLocked(group, index - keep);
+        TrimPacketsLocked(packets[group], index - keep);
     }
 
     void TrimLocked()
@@ -109,13 +145,24 @@ sealed class ReplayBuffer
         {
             // Audio from a little before the first frame is kept: a clip needs one packet of lead-in.
             long first = (long)Math.Floor((video[0].Pts - pipeline.Origin) * (double)Audio.Rate / Clock.Second / Audio.AacFrame) - 2;
-            for (int g = 0; g < packets.Length; g++) TrimPacketsLocked(g, first);
+            for (int g = 0; g < packets.Length; g++) TrimPacketsLocked(packets[g], first);
+        }
+        foreach (var (pid, a) in apps.ToList())
+        {
+            long first = (long)Math.Floor((video[0].Pts - a.Pipeline.Origin) * (double)Audio.Rate / Clock.Second / Audio.AacFrame) - 2;
+            TrimPacketsLocked(a.Packets, first);
+            int heard = a.Loud.FindIndex(t => t >= video[0].Pts);
+            a.Loud.RemoveRange(0, heard < 0 ? a.Loud.Count : heard);
+            if (a.Loud.Count > 0) continue;
+            // Not heard in the whole buffer: dropped until it makes sound again.
+            foreach (var x in a.Packets) audioBytes -= x.Data.Length;
+            a.Dispose();
+            apps.Remove(pid);
         }
     }
 
-    void TrimPacketsLocked(int group, long before)
+    void TrimPacketsLocked(List<(long Index, byte[] Data)> list, long before)
     {
-        var list = packets[group];
         int n = 0;
         while (n < list.Count && list[n].Index < before) { audioBytes -= list[n].Data.Length; n++; }
         if (n > 0) list.RemoveRange(0, n);
@@ -126,9 +173,15 @@ sealed class ReplayBuffer
         lock (gate)
         {
             PumpLocked(force: true); // encode the latest audio so the clip doesn't end early
-            long origin = pipeline?.Origin ?? 0;
-            var audio = pipeline == null ? new List<AudioPackets>()
-                : packets.Select(p => new AudioPackets(origin, new List<(long, byte[])>(p))).ToList();
+            var audio = new List<AudioPackets>();
+            long from = video.Count > 0 ? video[0].Pts - Clock.Second : 0, to = video.Count > 0 ? video[^1].Pts : 0;
+            var heard = apps.Values.Where(a => a.Loud.Any(t => t >= from && t <= to)).ToList();
+            if (pipeline != null)
+                for (int g = 0; g < packets.Length; g++)
+                    if (heard.Count == 0 || !SoundNames.IsPlainCopy(groups, g))
+                        audio.Add(new AudioPackets(pipeline.Origin, new List<(long, byte[])>(packets[g]), SoundNames.Of(groups[g])));
+            foreach (var a in heard)
+                audio.Add(new AudioPackets(a.Pipeline.Origin, new List<(long, byte[])>(a.Packets), a.Name));
             return new ReplaySnapshot(new List<EncodedFrame>(video), audio);
         }
     }
@@ -193,5 +246,13 @@ sealed class MediaRouter
         lock (gate) { rep = bufferReplay; rec = recorder; }
         if (rep) Replay.AppendAudio(chunk, track);
         rec?.AppendAudio(chunk, track);
+    }
+
+    public void AppAudio(AudioChunk chunk, AppSound app)
+    {
+        bool rep; LiveRecorder? rec;
+        lock (gate) { rep = bufferReplay; rec = recorder; }
+        if (rep) Replay.AppendAppAudio(chunk, app);
+        rec?.AppendAppAudio(chunk, app);
     }
 }

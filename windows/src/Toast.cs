@@ -95,6 +95,8 @@ static class Toast
             SizeToContent = SizeToContent.WidthAndHeight;
             Opacity = 0;
             Left = -10000; Top = -10000;
+            UseLayoutRounding = true; // sizes are ×1.35 (Theme.S); snapped to pixels, text and edges stay sharp
+            TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
 
             var content = BuildCard(title, subtitle, icon, tint, onClick != null, closable ? () => Dismiss(fast: false) : null,
                 button is { } tb ? (tb.Title, () => { tb.Action(); Dismiss(fast: false); }) : null);
@@ -156,10 +158,12 @@ static class Toast
     static FrameworkElement BuildDarkCard(string title, string? subtitle, Sym icon, Color tint, bool clickable, Action? close,
                                           (string Title, Action Action)? button)
     {
+        // The Classic layout's look (ShadowPlay-style): square, near-black, with an edge in the notice's color.
+        bool classic = Settings.Shared.OverlayLayout == OverlayLayout.Classic;
         {
             var iconBox = new Border
             {
-                Width = Theme.S(30), Height = Theme.S(30), CornerRadius = new CornerRadius(Theme.S(9)),
+                Width = Theme.S(30), Height = Theme.S(30), CornerRadius = new CornerRadius(Theme.S(classic ? 15 : 9)),
                 Background = Theme.Brush(tint, 0.22), VerticalAlignment = VerticalAlignment.Center,
                 Child = Icons.Make(icon, Theme.S(icon is Sym.Replay or Sym.ReplayOff or Sym.Record or Sym.RecordFill ? 18 : 15), Theme.Brush(tint)),
             };
@@ -180,13 +184,14 @@ static class Toast
             {
                 var pill = new Border
                 {
-                    CornerRadius = new CornerRadius(Theme.S(11)), Background = Theme.Brush(Colors.White, 0.14),
+                    CornerRadius = new CornerRadius(classic ? 0 : Theme.S(11)), Background = classic ? Theme.Brush(tint) : Theme.Brush(Colors.White, 0.14),
                     Padding = new Thickness(Theme.S(10), Theme.S(4), Theme.S(10), Theme.S(4)),
                     VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(Theme.S(8), 0, 0, 0), Cursor = Cursors.Hand,
-                    Child = Theme.Text(btn.Title, 11, FontWeights.SemiBold),
+                    Child = Theme.Text(classic ? btn.Title.ToUpperInvariant() : btn.Title, 11, FontWeights.SemiBold, classic ? Brushes.Black : null),
                 };
-                pill.MouseEnter += (_, _) => pill.Background = Theme.Brush(Colors.White, 0.22);
-                pill.MouseLeave += (_, _) => pill.Background = Theme.Brush(Colors.White, 0.14);
+                var idle = pill.Background;
+                pill.MouseEnter += (_, _) => pill.Background = classic ? Theme.Brush(tint, 0.85) : Theme.Brush(Colors.White, 0.22);
+                pill.MouseLeave += (_, _) => pill.Background = idle;
                 pill.MouseLeftButtonUp += (_, e) => { e.Handled = true; btn.Action(); };
                 DockPanel.SetDock(pill, Dock.Right);
                 row.Children.Add(pill);
@@ -195,7 +200,7 @@ static class Toast
             {
                 var x = new Border
                 {
-                    Width = Theme.S(22), Height = Theme.S(22), CornerRadius = new CornerRadius(Theme.S(11)),
+                    Width = Theme.S(22), Height = Theme.S(22), CornerRadius = new CornerRadius(classic ? 0 : Theme.S(11)),
                     Background = Theme.Brush(Colors.White, 0.1), VerticalAlignment = VerticalAlignment.Center,
                     Margin = new Thickness(Theme.S(8), 0, 0, 0), Cursor = Cursors.Hand, ToolTip = "Not now",
                     Child = new TextBlock
@@ -220,18 +225,30 @@ static class Toast
             }
             row.Children.Add(texts);
 
+            var radius = new CornerRadius(classic ? 0 : Theme.S(Theme.Radius * 0.6));
+            // The shadow is its own layer: an effect on the card would draw its text through a soft bitmap.
+            var fill = new Border
+            {
+                CornerRadius = radius,
+                Background = classic ? Theme.Brush(Theme.Hex(0x141617), 0.96) : Theme.Brush(Theme.PanelBase, 0.94),
+                Effect = new DropShadowEffect { BlurRadius = Theme.S(18), ShadowDepth = Theme.S(5), Direction = 270, Opacity = 0.4, Color = Colors.Black },
+            };
             var card = new Border
             {
                 Width = Theme.S(330),
-                Padding = new Thickness(Theme.S(14), Theme.S(11), Theme.S(14), Theme.S(11)),
-                CornerRadius = new CornerRadius(Theme.S(Theme.Radius * 0.6)),
-                Background = Theme.Brush(Theme.PanelBase, 0.94),
+                Padding = new Thickness(Theme.S(classic ? 16 : 14), Theme.S(11), Theme.S(14), Theme.S(11)),
+                CornerRadius = radius,
+                Background = Brushes.Transparent,
                 BorderBrush = Theme.Line, BorderThickness = new Thickness(1),
                 Child = row,
-                Effect = new DropShadowEffect { BlurRadius = Theme.S(18), ShadowDepth = Theme.S(5), Direction = 270, Opacity = 0.4, Color = Colors.Black },
                 Cursor = clickable ? Cursors.Hand : Cursors.Arrow,
             };
-            return new Border { Padding = new Thickness(Theme.S(16)), Child = card, Background = Brushes.Transparent };
+            var layers = new Grid { HorizontalAlignment = HorizontalAlignment.Center }; // as wide as the card, never stretched
+            layers.Children.Add(fill);
+            layers.Children.Add(card);
+            if (classic)
+                layers.Children.Add(new Border { Width = Theme.S(3), HorizontalAlignment = HorizontalAlignment.Left, Background = Theme.Brush(tint), IsHitTestVisible = false });
+            return new Border { Padding = new Thickness(Theme.S(16)), Child = layers, Background = Brushes.Transparent };
         }
     }
 }

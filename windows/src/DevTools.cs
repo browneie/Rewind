@@ -53,6 +53,37 @@ static class DevTools
 
                 var toast = Toast.BuildCard("Replay saved", "2:00 · Replay 2026-11-13 at 21.04.11.mp4", Sym.Check, Theme.Replay, clickable: true);
                 Save(OnBackground(toast, 560, 140), Path.Combine(dir, "notification.png"));
+                Settings.Shared.OverlayLayout = OverlayLayout.Classic;
+                var classic = new StackPanel();
+                classic.Children.Add(Toast.BuildCard("Replay saved", "2:00 · Replay 2026-11-13 at 21.04.11.mp4", Sym.Check, Theme.Replay, clickable: true));
+                classic.Children.Add(Toast.BuildCard("Instant Replay is off", null, Sym.ReplayOff, Theme.Gray, clickable: false));
+                classic.Children.Add(Toast.BuildCard("Rewind 2.2.0 is available", "Click to update now · ✕ for later", Sym.Download, Theme.Accent, clickable: true, close: () => { }));
+                Save(OnBackground(classic, 560, 400), Path.Combine(dir, "notification-classic.png"));
+                Settings.Shared.OverlayLayout = OverlayLayout.Panes;
+
+                // The trimmer's sound chips in each layout's colors and shapes.
+                var trims = new StackPanel();
+                foreach (var (pal, square, name) in new[]
+                {
+                    (PanePalette.OverlayDark, false, "Split"), (PanePalette.OverlayDark, true, "Classic"),
+                    (PanePalette.Console, true, "Console"), (PanePalette.SidebarLight, true, "Sidebar (light)"),
+                })
+                {
+                    var row = new SaveAsRow(Theme.S(520), pal, () => { }, square);
+                    row.ShowSounds(new()
+                    {
+                        new("Valorant", 2, true, false), new("Discord", 3, true, false), new("Spotify", 4, false, false), new(SoundNames.Mic, 1, true, true),
+                    });
+                    row.ShowChoices();
+                    var title = Theme.Text(name, 9.5, FontWeights.SemiBold, pal.MutedBrush);
+                    title.Margin = new Thickness(0, 0, 0, Theme.S(8));
+                    trims.Children.Add(new Border
+                    {
+                        Background = Theme.Brush(pal.Bg), Padding = new Thickness(Theme.S(16)),
+                        Child = new StackPanel { Children = { title, row } },
+                    });
+                }
+                Save(trims, Path.Combine(dir, "trimmer-sounds.png"));
 
                 var wheel = new Border
                 {

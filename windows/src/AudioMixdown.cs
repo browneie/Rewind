@@ -104,7 +104,8 @@ sealed class AudioPipeline : IDisposable
     // WASAPI delivers every 10 ms, so this is generous while keeping a saved clip's ending intact.
     static readonly long Patience = Clock.Second * 15 / 100;
 
-    readonly Dictionary<AudioTrack, PcmTimeline> timelines = new();
+    // A source can be in several groups (game sound on its own and in each mix): each group gets its own copy.
+    readonly Dictionary<AudioTrack, List<PcmTimeline>> timelines = new();
     readonly AudioOutput[] outputs;
     readonly List<byte[]> scratch = new();
     readonly long[] next;
@@ -118,14 +119,23 @@ sealed class AudioPipeline : IDisposable
         Origin = origin;
         Groups = groups;
         latestMedia = origin;
-        outputs = groups.Select(g => new AudioOutput(g.Select(t => timelines[t] = new PcmTimeline(origin)).ToArray())).ToArray();
+        PcmTimeline Timeline(AudioTrack t)
+        {
+            var tl = new PcmTimeline(origin);
+            if (!timelines.TryGetValue(t, out var list)) timelines[t] = list = new();
+            list.Add(tl);
+            return tl;
+        }
+        outputs = groups.Select(g => new AudioOutput(g.Select(Timeline).ToArray())).ToArray();
         next = new long[groups.Length];
     }
 
+    IEnumerable<PcmTimeline> All => timelines.Values.SelectMany(l => l);
+
     public void Add(AudioChunk c, AudioTrack track)
     {
-        if (!timelines.TryGetValue(track, out var tl)) return;
-        tl.Add(c);
+        if (!timelines.TryGetValue(track, out var list)) return;
+        foreach (var tl in list) tl.Add(c);
         latestMedia = Math.Max(latestMedia, c.Pts + c.Frames * Clock.Second / Audio.Rate);
     }
 
@@ -137,13 +147,13 @@ sealed class AudioPipeline : IDisposable
     public void Finish(Action<int, long, byte[]> emit, long endPts)
     {
         long until = Audio.FrameAt(Math.Max(endPts, latestMedia), Origin);
-        if (timelines.Count > 0) until = Math.Max(until, timelines.Values.Max(t => t.WrittenFrames));
+        if (timelines.Count > 0) until = Math.Max(until, All.Max(t => t.WrittenFrames));
         Run((until + Audio.AacFrame - 1) / Audio.AacFrame * Audio.AacFrame, final: true, emit);
     }
 
     void Run(long until, bool final, Action<int, long, byte[]> emit)
     {
-        foreach (var tl in timelines.Values) tl.PadTo(until);
+        foreach (var tl in All) tl.PadTo(until);
         for (int i = 0; i < outputs.Length; i++)
         {
             outputs[i].Pump(scratch, final);

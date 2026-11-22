@@ -9,6 +9,10 @@ sealed class Mp4Reader
     public sealed class Track
     {
         public string Handler = "";
+        /// The track's name in its handler box ("Discord", "Mic"); "" in clips from before tracks had names.
+        public string Name = "";
+        /// Sample bytes held in memory (a sound track mixed for saving) instead of read from the file.
+        public List<byte[]>? Data;
         public bool IsVideo => Handler == "vide";
         public bool IsAudio => Handler == "soun";
         public int Timescale;
@@ -108,7 +112,12 @@ sealed class Mp4Reader
                 foreach (var (mt, ms, me) in Boxes(b, s, e))
                 {
                     if (mt == "mdhd") t.Timescale = (int)U32(b, ms + (b[ms] == 1 ? 20 : 12));
-                    else if (mt == "hdlr") t.Handler = Encoding.ASCII.GetString(b, ms + 8, 4);
+                    else if (mt == "hdlr")
+                    {
+                        t.Handler = Encoding.ASCII.GetString(b, ms + 8, 4);
+                        if (me > ms + 24) t.Name = Encoding.UTF8.GetString(b, ms + 24, me - ms - 24).TrimEnd('\0');
+                        if (t.Name is "SoundHandler" or "VideoHandler") t.Name = "";
+                    }
                     else if (mt == "minf")
                         foreach (var (nt, ns, ne) in Boxes(b, ms, me))
                             if (nt == "stbl")

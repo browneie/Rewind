@@ -40,19 +40,20 @@ static class ClipConverter
     }
 
     /// "Replay â€¦ (HEVC).mp4" for a whole clip, "(trimmed, HEVC)" for part of one.
-    public static string OutputPath(string source, ExportFormat format, bool whole) =>
-        ClipTrimmer.OutputPath(source, whole ? format.Label() : $"trimmed, {format.Label()}");
+    public static string OutputPath(string source, ExportFormat format, bool whole, bool sound = true) =>
+        ClipTrimmer.OutputPath(source, (whole ? format.Label() : $"trimmed, {format.Label()}") + (sound ? "" : ", no sound"));
 
     public static Task<double> ConvertAsync(string source, double start, double end, ExportFormat format, int quality, string dest,
-                                            Action<double> progress) =>
-        Task.Run(() => Convert(source, start, end, format, quality, dest, progress));
+                                            Action<double> progress, int[]? audio = null) =>
+        Task.Run(() => Convert(source, start, end, format, quality, dest, progress, audio: audio));
 
     /// `start` and `end` are in seconds of the clip as it's shown (edit lists applied). Returns the new length.
     /// At 100 ("original") a clip already in `format` is cut without re-encoding, exactly like Trim.
     /// With `bitrate` (bits per second), `quality` is ignored and the video is encoded at that bitrate
     /// (for fitting a size limit, see ClipSharer).
+    /// `audio`: which sound tracks to keep, as from ClipAudio.Choose (null keeps them all).
     public static double Convert(string source, double start, double end, ExportFormat format, int quality, string dest,
-                                 Action<double> progress, int? bitrate = null)
+                                 Action<double> progress, int? bitrate = null, int[]? audio = null)
     {
         var codec = format.Codec() ?? throw new RewindException("Nothing to convert to.");
         var r = Mp4Reader.Open(source);
@@ -62,7 +63,7 @@ static class ClipConverter
         if (end <= start) throw new RewindException("Choose a part to keep first.");
         if (quality >= 100 && bitrate == null && v.Codec == codec)
         {
-            double len = ClipTrimmer.Trim(source, start, end, dest);
+            double len = ClipTrimmer.Trim(source, start, end, dest, audio);
             progress(1);
             return len;
         }
@@ -137,7 +138,7 @@ static class ClipConverter
                     var (off, size) = (fr.Offset, fr.Size);
                     samples.Add((Clock.Seconds(fr.Pts), vt, size, Ticks.ToVideo(fr.Pts), fr.Key, () => ReadAt(spillFs, off, size)));
                 }
-                foreach (var a in r.AudioTracks)
+                foreach (var a in ClipAudio.Pick(source, r, audio, end + 0.1))
                 {
                     if (a.Count == 0 || a.AudioConfig == null) continue;
                     // Starts at the packet nearest the first frame; an edit list lines it up exactly.
@@ -146,12 +147,12 @@ static class ClipConverter
                         if (Math.Abs(a.Presented(j) - shownFrom) < Math.Abs(a.Presented(j0) - shownFrom)) j0 = j;
                     long lead = (long)Math.Round((shownFrom - a.Presented(j0)) * a.Timescale);
                     int at = mp4.AddAudio(a.SampleRate > 0 ? a.SampleRate : Audio.Rate, a.Channels > 0 ? a.Channels : Audio.Channels, Audio.Bitrate,
-                                          a.AudioConfig, editMediaTime: Math.Max(lead, 0), delaySamples: Math.Max(-lead, 0));
+                                          a.AudioConfig, editMediaTime: Math.Max(lead, 0), delaySamples: Math.Max(-lead, 0), name: a.Name);
                     double frame = Audio.AacFrame / (double)a.Timescale;
                     for (int j = j0; j < a.Count && a.Presented(j) < shownFrom + length + frame; j++)
                     {
-                        var (off, size) = (a.Offsets[j], a.Sizes[j]);
-                        samples.Add((a.Presented(j) - shownFrom, at, size, a.Dts[j] - a.Dts[j0], true, () => ReadAt(src, off, size)));
+                        var (off, size, data) = (a.Offsets[j], a.Sizes[j], a.Data?[j]);
+                        samples.Add((a.Presented(j) - shownFrom, at, size, a.Dts[j] - a.Dts[j0], true, data != null ? () => data : () => ReadAt(src, off, size)));
                     }
                 }
                 foreach (var s in samples.OrderBy(s => s.Time))

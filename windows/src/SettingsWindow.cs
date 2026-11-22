@@ -150,11 +150,13 @@ sealed class SettingsContent : StackPanel
     public static bool IsRecording { get; private set; }
 
     /// `groupTitles` puts each page's name above its sections (Sidebar tabs that hold several pages).
-    public SettingsContent(IEnumerable<SettingsPage> pages, bool inOverlay, bool groupTitles = false)
+    /// `flat`: square sections with small capital titles, for the Classic layout's square panels.
+    public SettingsContent(IEnumerable<SettingsPage> pages, bool inOverlay, bool groupTitles = false, bool flat = false)
     {
         this.pages = pages.ToHashSet();
         this.inOverlay = inOverlay;
         this.groupTitles = groupTitles;
+        this.flat = flat;
         root = this;
         Build();
 
@@ -183,7 +185,7 @@ sealed class SettingsContent : StackPanel
         Refresh();
     }
 
-    readonly bool groupTitles;
+    readonly bool groupTitles, flat;
     SettingsPage? titled;
 
     bool Has(SettingsPage p)
@@ -211,6 +213,40 @@ sealed class SettingsContent : StackPanel
         }
         catch (Exception e) { Log.Error("fluent theme", e); }
         host.SetResourceReference(TextElement.ForegroundProperty, "TextFillColorPrimaryBrush");
+    }
+
+    /// Fluent's controls in Rewind's accent color (checked boxes, sliders, focus) instead of Windows' own, with
+    /// square corners.
+    public static void Accented(FrameworkElement host, Color accent)
+    {
+        var r = host.Resources;
+        foreach (var k in new[] { "SystemAccentColor", "SystemAccentColorPrimary", "SystemAccentColorSecondary", "SystemAccentColorTertiary",
+                                  "SystemAccentColorLight1", "SystemAccentColorLight2", "SystemAccentColorLight3",
+                                  "SystemAccentColorDark1", "SystemAccentColorDark2", "SystemAccentColorDark3" })
+            r[k] = accent;
+        Brush Solid(Color c) { var b = new SolidColorBrush(c); b.Freeze(); return b; }
+        r["AccentFillColorDefaultBrush"] = Solid(accent);
+        r["AccentFillColorSecondaryBrush"] = Solid(Color.FromArgb(0xE6, accent.R, accent.G, accent.B));
+        r["AccentFillColorTertiaryBrush"] = Solid(Color.FromArgb(0xCC, accent.R, accent.G, accent.B));
+        r["AccentTextFillColorPrimaryBrush"] = Solid(accent);
+        r["AccentTextFillColorSecondaryBrush"] = Solid(accent);
+        r["AccentTextFillColorTertiaryBrush"] = Solid(accent);
+        // Dark text on the accent (a check mark on light green, say).
+        bool lightAccent = accent.R * 0.299 + accent.G * 0.587 + accent.B * 0.114 > 140;
+        r["TextOnAccentFillColorPrimaryBrush"] = Solid(lightAccent ? Color.FromRgb(0x0B, 0x0D, 0x0E) : Colors.White);
+        // The controls' own keys (their templates look these up, not the general accent ones).
+        var fill = Solid(accent);
+        foreach (var k in new[] { "CheckBoxCheckBackgroundFillChecked", "CheckBoxCheckBackgroundFillCheckedPointerOver", "CheckBoxCheckBackgroundFillCheckedPressed",
+                                  "CheckBoxCheckBackgroundFillIndeterminate", "CheckBoxCheckBackgroundFillIndeterminatePointerOver", "CheckBoxCheckBackgroundFillIndeterminatePressed",
+                                  "CheckBoxCheckBackgroundStrokeChecked", "CheckBoxCheckBackgroundStrokeCheckedPointerOver", "CheckBoxCheckBackgroundStrokeCheckedPressed",
+                                  "CheckBoxCheckBackgroundStrokeIndeterminate", "CheckBoxCheckBackgroundStrokeIndeterminatePointerOver", "CheckBoxCheckBackgroundStrokeIndeterminatePressed",
+                                  "SliderThumbBackground", "SliderThumbBackgroundPointerOver", "SliderThumbBackgroundPressed",
+                                  "ComboBoxBorderBrushFocused", "TextControlFocusedBorderBrush", "TextControlBorderBrushFocused" })
+            r[k] = fill;
+        r["CheckBoxCheckGlyphForeground"] = r["TextOnAccentFillColorPrimaryBrush"];
+        r["CheckBoxCheckGlyphForegroundPressed"] = r["TextOnAccentFillColorPrimaryBrush"];
+        r["ControlCornerRadius"] = new CornerRadius(0);
+        r["OverlayCornerRadius"] = new CornerRadius(0);
     }
 
     void Build()
@@ -780,6 +816,13 @@ sealed class SettingsContent : StackPanel
         // In the overlay the page already has this name above it.
         bool repeat = inOverlay && string.Equals(title, current.Title(), StringComparison.OrdinalIgnoreCase);
         var header = new TextBlock { Text = title, FontWeight = FontWeights.SemiBold, FontSize = 14, Margin = new Thickness(4, repeat ? 10 : 16, 0, 8) };
+        if (flat)
+        {
+            header.Text = title.ToUpperInvariant();
+            header.FontSize = 11.5;
+            header.Margin = new Thickness(2, repeat ? 6 : 18, 0, 8);
+            header.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
+        }
         if (!repeat) root.Children.Add(header);
         var stack = new StackPanel();
         for (int i = 0; i < rows.Length; i++)
@@ -794,7 +837,7 @@ sealed class SettingsContent : StackPanel
             }
             stack.Children.Add(rows[i]);
         }
-        var card = new Border { CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1), Child = stack };
+        var card = new Border { CornerRadius = new CornerRadius(flat ? 0 : 8), BorderThickness = new Thickness(1), Child = stack };
         card.SetResourceReference(Border.BackgroundProperty, "CardBackgroundFillColorDefaultBrush");
         card.SetResourceReference(Border.BorderBrushProperty, "CardStrokeColorDefaultBrush");
         root.Children.Add(card);

@@ -63,6 +63,8 @@ static class SelfTest
         using var rtv = gpu.Device.CreateRenderTargetView(bgra);
 
         long start = Clock.Now, audioFrame = 0;
+        var game = new AppSound(1, "Game");
+        var chatApp = new AppSound(2, "Chat");
         int drops = 0;
         const int chunk = 480;
         for (int i = 0; i < fps * seconds; i++)
@@ -90,6 +92,12 @@ static class SelfTest
                 replayMixed.AppendAudio(mic, AudioTrack.Mic);
                 recorderMixed?.AppendAudio(sys, AudioTrack.System);
                 recorderMixed?.AppendAudio(mic, AudioTrack.Mic);
+                // Two apps on tracks of their own: the game (the same beeps) and a chat app beeping with it.
+                var chat = new AudioChunk(apts, Tone(audioFrame, chunk, 440, 0.2, beeps: true));
+                replayMixed.AppendAppAudio(sys, game);
+                replayMixed.AppendAppAudio(chat, chatApp);
+                recorderMixed?.AppendAppAudio(sys, game);
+                recorderMixed?.AppendAppAudio(chat, chatApp);
                 audioFrame += chunk;
             }
             long wait = start + (i + 1) * Clock.Second / fps - Clock.Now;
@@ -118,15 +126,67 @@ static class SelfTest
         catch (Exception e) { Console.WriteLine($"FAIL clip: {e}"); return false; }
 
         ok &= Inspect(clipSep, audioTracks: 2, minSeconds: 3);
-        ok &= Inspect(clipMix, audioTracks: 1, minSeconds: 3);
+        // All sound + Mic, Mic, Game, Chat (the plain game-sound copy is left out once apps have tracks).
+        ok &= Inspect(clipMix, audioTracks: 4, minSeconds: 3);
+        ok &= TestAppTracks(clipMix);
         if (full)
         {
             ok &= Inspect(recSep, audioTracks: 2, minSeconds: seconds - 0.5);
-            ok &= Inspect(recMix, audioTracks: 1, minSeconds: seconds - 0.5);
+            ok &= Inspect(recMix, audioTracks: 4, minSeconds: seconds - 0.5);
             ok &= TestTrim(recSep, audioTracks: 2);
             ok &= TestConvert(recSep, audioTracks: 2);
             ok &= TestShare(recSep, audioTracks: 2);
         }
+        return ok;
+    }
+
+    /// The trimmer's choice of sounds: the clip's sounds as listed, two apps mixed into one track (still in
+    /// sync), one app alone, and no sound at all; trimmed as is and converted.
+    static bool TestAppTracks(string source)
+    {
+        bool ok = true;
+        var r = Mp4Reader.Open(source);
+        var sounds = ClipAudio.Sources(r);
+        string listed = string.Join(", ", sounds.Select(x => $"{x.Name}{(x.On ? "" : " (off)")}"));
+        Console.WriteLine($"{Path.GetFileName(source)}: sounds {listed}; AAC round trip {ClipAudio.Delay} samples");
+        if (listed != "Game, Chat, Mic") { Console.WriteLine("FAIL sounds: expected Game, Chat, Mic, all on"); ok = false; }
+        int Track(string name) => sounds.First(x => x.Name == name).Track;
+        double length = r.Video!.PresentedDuration;
+        var cases = new (string Label, string[] On, int Tracks, string Name)[]
+        {
+            ("game + chat", new[] { "Game", "Chat" }, 1, "Game + Chat"),
+            ("chat only", new[] { "Chat" }, 1, "Chat"),
+            ("no sound", Array.Empty<string>(), 0, ""),
+            ("as recorded", new[] { "Game", "Chat", "Mic" }, 4, "All sound + Mic"),
+        };
+        foreach (var (label, on, tracks, name) in cases)
+        {
+            var choice = ClipAudio.Choose(sounds, on.Select(Track).ToList());
+            var dest = ClipTrimmer.OutputPath(source, "trimmed, " + label);
+            try
+            {
+                ClipTrimmer.Trim(source, 0.4, length, dest, choice);
+                var t = Mp4Reader.Open(dest).AudioTracks.ToList();
+                if (t.Count != tracks || (tracks > 0 && t[0].Name != name))
+                {
+                    Console.WriteLine($"FAIL {label}: {t.Count} sound tracks, first \"{t.FirstOrDefault()?.Name}\" (expected {tracks}, \"{name}\")");
+                    ok = false;
+                }
+                else if (tracks > 0) ok &= Inspect(dest, audioTracks: tracks, minSeconds: length - 0.6);
+                else Console.WriteLine($"{Path.GetFileName(dest)}: no sound tracks, as chosen");
+            }
+            catch (Exception e) { Console.WriteLine($"FAIL {label}: {e}"); ok = false; }
+            finally { File.Delete(dest); }
+        }
+        var converted = ClipConverter.OutputPath(source, ExportFormat.H264, whole: false);
+        try
+        {
+            ClipConverter.Convert(source, 0.4, length, ExportFormat.H264, 50, converted, _ => { },
+                audio: ClipAudio.Choose(sounds, new[] { Track("Game"), Track("Mic") }));
+            ok &= Inspect(converted, audioTracks: 1, minSeconds: length - 0.6);
+        }
+        catch (Exception e) { Console.WriteLine($"FAIL convert with game + mic: {e}"); ok = false; }
+        finally { File.Delete(converted); }
         return ok;
     }
 
@@ -180,7 +240,7 @@ static class SelfTest
     {
         var r = Mp4Reader.Open(source);
         double seconds = r.Video!.PresentedDuration;
-        double audio = r.AudioTracks.Sum(a => a.MediaDuration > 0 ? a.Sizes.Sum(x => (long)x) * 8 / a.MediaDuration : 192_000);
+        double audio = r.AudioTracks.Take(1).Sum(a => a.MediaDuration > 0 ? a.Sizes.Sum(x => (long)x) * 8 / a.MediaDuration : 192_000);
         long limit = (long)((audio + 300_000) * seconds / 8 / 0.92);
         string dest;
         try { dest = ClipSharer.Fit(source, limit, _ => { }); }
@@ -189,7 +249,7 @@ static class SelfTest
         Console.Write($"share fit → {size / 1024} KB (limit {limit / 1024} KB); ");
         bool ok = size <= limit;
         if (!ok) Console.WriteLine("FAIL share fit: over the limit");
-        ok &= Inspect(dest, audioTracks, minSeconds: seconds - 0.15);
+        ok &= Inspect(dest, Math.Min(audioTracks, 1), minSeconds: seconds - 0.15); // only the clip's own sound goes along
         File.Delete(dest);
         return ok;
     }

@@ -11,6 +11,8 @@ sealed class CaptureEngine
 {
     public Action<EncodedFrame>? OnVideo;
     public Action<AudioChunk, AudioTrack>? OnAudio;
+    /// Each app making sound, on its own (for the trimmer's choice of sounds).
+    public Action<AudioChunk, AppSound>? OnAppAudio;
     public Action<Exception>? OnStop;
     public Action? OnTargetClosed;
 
@@ -101,6 +103,7 @@ sealed class CaptureEngine
         FrameConverter? converter;
         VideoEncoder? encoder;
         readonly List<AudioCapture> audio = new();
+        AppAudioWatcher? appAudio;
         SizeInt32 poolSize, lastContent;
         long nextFrame = long.MinValue, interval;
         bool disposed, failed;
@@ -167,9 +170,14 @@ sealed class CaptureEngine
             // Audio. When capturing one app, record only that app's sound (and its child processes').
             if (sig.SystemAudio)
             {
+                SoundNames.System = SoundNames.All;
                 if (target.Pid != 0)
                 {
-                    try { audio.Add(AudioCapture.Start(AudioCapture.Source.Process, target.Pid, c => owner.OnAudio?.Invoke(c, AudioTrack.System))); }
+                    try
+                    {
+                        audio.Add(AudioCapture.Start(AudioCapture.Source.Process, target.Pid, c => owner.OnAudio?.Invoke(c, AudioTrack.System)));
+                        SoundNames.System = AppName is { Length: > 0 } n ? n : "Game";
+                    }
                     catch (Exception e)
                     {
                         Log.Error("app audio", e);
@@ -182,6 +190,9 @@ sealed class CaptureEngine
                     catch (Exception e) { Log.Error("system audio", e); owner.Warnings.Add("System audio: " + e.Message); }
                 }
             }
+            if (sig.SystemAudio)
+                appAudio = new AppAudioWatcher(target.Pid, SoundNames.System == SoundNames.All ? null : SoundNames.System,
+                                               (c, app) => owner.OnAppAudio?.Invoke(c, app));
             if (sig.Microphone)
             {
                 try { audio.Add(AudioCapture.Start(AudioCapture.Source.Microphone, 0, c => owner.OnAudio?.Invoke(c, AudioTrack.Mic))); }
@@ -512,6 +523,8 @@ sealed class CaptureEngine
             watcher?.Dispose();
             lock (switchLock)
             {
+                appAudio?.Dispose();
+                appAudio = null;
                 foreach (var a in audio) a.Dispose();
                 audio.Clear();
                 lock (frameLock) disposed = true;

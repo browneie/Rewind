@@ -260,9 +260,11 @@ static class ClipTrimmer
     }
 
     /// `start` and `end` are in seconds from the start of the clip as it's shown (edit lists applied).
-    public static Task<double> TrimAsync(string source, double start, double end, string dest) => Task.Run(() => Trim(source, start, end, dest));
+    public static Task<double> TrimAsync(string source, double start, double end, string dest, int[]? audio = null) =>
+        Task.Run(() => Trim(source, start, end, dest, audio));
 
-    public static double Trim(string source, double start, double end, string dest)
+    /// `audio`: which sound tracks to keep, as from ClipAudio.Choose (null keeps them all).
+    public static double Trim(string source, double start, double end, string dest, int[]? audio = null)
     {
         var r = Mp4Reader.Open(source);
         var v = r.Video ?? throw new RewindException("This clip has no video.");
@@ -292,11 +294,14 @@ static class ClipTrimmer
 
         using var mp4 = new Mp4Muxer(dest, fastStart: true);
         int vt = mp4.AddVideo(cfg, editMediaTime: (long)Math.Round((shownFrom - t0) * Mp4Muxer.VideoTimescale));
-        var samples = new List<(double time, int track, int size, long dts, bool sync, long offset)>();
+        var samples = new List<(double time, int track, int size, long dts, bool sync, Func<byte[]> load)>();
         for (int i = k; i < e; i++)
-            samples.Add((v.Presented(i) - t0, vt, v.Sizes[i], (long)Math.Round((v.Presented(i) - t0) * Mp4Muxer.VideoTimescale), v.IsSync(i), v.Offsets[i]));
+        {
+            var (off, size) = (v.Offsets[i], v.Sizes[i]);
+            samples.Add((v.Presented(i) - t0, vt, size, (long)Math.Round((v.Presented(i) - t0) * Mp4Muxer.VideoTimescale), v.IsSync(i), () => Read(off, size)));
+        }
 
-        foreach (var a in r.AudioTracks)
+        foreach (var a in ClipAudio.Pick(source, r, audio, end + 0.1))
         {
             if (a.Count == 0 || a.AudioConfig == null) continue;
             // Audio starts at the packet nearest the keyframe as players that ignore edit lists see them, so those
@@ -308,14 +313,17 @@ static class ClipTrimmer
                 if (Math.Abs(Raw(j) - raw) < Math.Abs(Raw(j0) - raw)) j0 = j;
             long lead = (long)Math.Round((shownFrom - a.Presented(j0)) * a.Timescale);
             int at = mp4.AddAudio(a.SampleRate > 0 ? a.SampleRate : Audio.Rate, a.Channels > 0 ? a.Channels : Audio.Channels, Audio.Bitrate,
-                                  a.AudioConfig, editMediaTime: Math.Max(lead, 0), delaySamples: Math.Max(-lead, 0));
+                                  a.AudioConfig, editMediaTime: Math.Max(lead, 0), delaySamples: Math.Max(-lead, 0), name: a.Name);
             double frame = Audio.AacFrame / (double)a.Timescale;
             for (int j = j0; j < a.Count && a.Presented(j) < end + frame; j++)
-                samples.Add((Raw(j) - Raw(j0), at, a.Sizes[j], a.Dts[j] - a.Dts[j0], true, a.Offsets[j]));
+            {
+                var (off, size, data) = (a.Offsets[j], a.Sizes[j], a.Data?[j]);
+                samples.Add((Raw(j) - Raw(j0), at, size, a.Dts[j] - a.Dts[j0], true, data != null ? () => data : () => Read(off, size)));
+            }
         }
 
         foreach (var s in samples.OrderBy(s => s.time))
-            mp4.Write(s.track, s.size, s.dts, s.sync, () => Read(s.offset, s.size));
+            mp4.Write(s.track, s.size, s.dts, s.sync, s.load);
         mp4.Finish();
         return Math.Min(end, v.Presented(e - 1) + 1.0 / fps) - shownFrom;
     }
@@ -342,7 +350,7 @@ sealed record PanePalette(Color Text, Color Muted, Color Line, Color Wash, Color
 
 /// How a layout shows the clip pane: Split and Classic's header and thumbnails, Console's header row and
 /// filmstrip, or Sidebar's details under the player and "Earlier" list.
-enum PaneStyle { Standard, Console, Sidebar }
+enum PaneStyle { Standard, Console, Sidebar, Classic }
 
 /// Plain text that acts as a button: brighter on hover.
 sealed class TextLink : TextBlock
@@ -430,6 +438,13 @@ sealed class ClipPane : StackPanel
                 Children.Add(stageHost);
                 Children.Add(thumbs);
                 break;
+            case PaneStyle.Classic:
+                header.Margin = new Thickness(0, 0, 0, Theme.S(10));
+                thumbs.Margin = new Thickness(0, Theme.S(12), 0, 0);
+                Children.Add(header);
+                Children.Add(stageHost);
+                Children.Add(thumbs);
+                break;
             case PaneStyle.Sidebar:
                 thumbs.Margin = new Thickness(0, 20, 0, 0);
                 Children.Add(stageHost);
@@ -490,7 +505,7 @@ sealed class ClipPane : StackPanel
         if (duration is { } d) ClipLibrary.Durations[item.FilePath] = d;
         if (size is { } sz) ClipLibrary.Sizes[item.FilePath] = sz;
         if (!ClipLibrary.Codecs.ContainsKey(item.FilePath) && ClipLibrary.CodecOf(item) is { } c) ClipLibrary.Codecs[item.FilePath] = c;
-        view = new ClipView(item, width, MediaHeight(item), play, RefreshChrome, p);
+        view = new ClipView(item, width, MediaHeight(item), play, RefreshChrome, p, style);
         stageHost.Children.Clear();
         stageHost.Children.Add(view);
         RefreshChrome();
@@ -529,9 +544,11 @@ sealed class ClipPane : StackPanel
         {
             case PaneStyle.Console: ConsoleHeader(); break;
             case PaneStyle.Sidebar: SidebarInfo(); break;
+            case PaneStyle.Classic: ClassicHeader(); break;
             default: StandardHeader(); break;
         }
         hint.Text = Item?.IsVideo == true && !IsBusy ? PlayHint : " ";
+        if (style == PaneStyle.Classic && view != null) view.ToolTip = Item?.IsVideo == true ? PlayHint : null;
         hint.Visibility = IsBusy ? Visibility.Collapsed : Visibility.Visible;
         thumbs.Visibility = ClipLibrary.Items.Count > 0 && !(style != PaneStyle.Standard && IsBusy) ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -637,6 +654,53 @@ sealed class ClipPane : StackPanel
         header.Children.Add(left);
     }
 
+    /// Classic: the clip's name and details on one line, plain text actions on the right.
+    void ClassicHeader()
+    {
+        header.Children.Clear();
+        var item = Item;
+        var right = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        if (item != null && view != null)
+        {
+            // Square icon buttons (the shape of Classic's panels); the names are in the tooltips.
+            Chip Square(string? title, Sym icon, Action action, string tip)
+            {
+                var b = new Chip(title, icon, action) { ToolTip = tip, CornerRadius = new CornerRadius(0), Margin = new Thickness(Theme.S(6), 0, 0, 0) };
+                return b;
+            }
+            if (item.IsVideo)
+            {
+                var trim = Square(view.IsSaving ? "Saving…" : null, Sym.Scissors, view.BeginTrim, "Trim");
+                if (IsBusy) { trim.IsEnabled = false; trim.Opacity = 0.5; }
+                right.Children.Add(trim);
+            }
+            right.Children.Add(Square(ClipSharer.IsBusy(item.FilePath) ? $"{(int)(ClipSharer.Progress * 100)}%" : null, Sym.Copy,
+                () => ClipSharer.Copy(item.FilePath), "Copy to paste into Discord or anywhere"));
+            right.Children.Add(Square(null, Sym.Folder, () => { var path = item.FilePath; close(); Controller.Reveal(path); }, "Show in Explorer"));
+            var del = Square(null, Sym.Trash, () => Delete(item), "Move to the Recycle Bin");
+            if (view.IsSaving) { del.IsEnabled = false; del.Opacity = 0.5; }
+            right.Children.Add(del);
+        }
+        if (showsClose)
+            right.Children.Add(new TextLink("", p.TextBrush, Theme.S(9), close, tip: "Close (Esc)")
+                { FontFamily = Theme.Symbols, Margin = new Thickness(Theme.S(18), 0, 0, 0) });
+        DockPanel.SetDock(right, Dock.Right);
+        header.Children.Add(right);
+        var left = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        if (item != null)
+        {
+            var name = Theme.Text(item.DisplayName, 12, FontWeights.SemiBold, p.TextBrush);
+            name.VerticalAlignment = VerticalAlignment.Center;
+            left.Children.Add(name);
+            var d = Theme.Text(ClipLibrary.Details(item), 10, brush: p.MutedBrush);
+            d.VerticalAlignment = VerticalAlignment.Center;
+            d.Margin = new Thickness(Theme.S(12), 0, Theme.S(10), 0);
+            left.Children.Add(d);
+        }
+        else left.Children.Add(Theme.Text("Gallery", 12, FontWeights.SemiBold, p.TextBrush));
+        header.Children.Add(left);
+    }
+
     void SidebarInfo()
     {
         info.Children.Clear();
@@ -677,6 +741,14 @@ sealed class ClipPane : StackPanel
                     thumbs.Children.Add(new ConsoleThumb(item, w, h, item == Item, p, i => Select(i, play: true)) { Margin = new Thickness(0, 0, 2, 0) });
                 break;
             }
+            case PaneStyle.Classic:
+            {
+                double w = Theme.S(104), h = w * 9 / 16, g = Theme.S(6);
+                int fits = Math.Max(1, (int)((width + g) / (w + g)));
+                foreach (var item in ClipLibrary.Items.Take(fits))
+                    thumbs.Children.Add(new ConsoleThumb(item, w, h, item == Item, p, i => Select(i, play: true), mono: false) { Margin = new Thickness(0, 0, g, 0) });
+                break;
+            }
             case PaneStyle.Sidebar:
             {
                 var others = ClipLibrary.Items.Where(i => i != Item).Take(3).ToList();
@@ -714,8 +786,10 @@ sealed class ClipPane : StackPanel
 /// Console's filmstrip tile: a square-cornered thumbnail with its length, and how long ago it was saved.
 sealed class ConsoleThumb : StackPanel
 {
-    public ConsoleThumb(ClipItem item, double w, double h, bool selected, PanePalette p, Action<ClipItem> open)
+    /// `mono: false` for Classic, which uses the regular font throughout.
+    public ConsoleThumb(ClipItem item, double w, double h, bool selected, PanePalette p, Action<ClipItem> open, bool mono = true)
     {
+        var family = mono ? Theme.Mono : Theme.Font;
         var picture = new Grid { Width = w, Height = h, ClipToBounds = true, Background = Theme.Brush(Theme.Wash, 0.05) };
         if (ClipLibrary.Thumbs.TryGetValue(item.FilePath, out var img))
             picture.Children.Add(new Image { Source = img, Stretch = Stretch.UniformToFill, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
@@ -726,7 +800,7 @@ sealed class ConsoleThumb : StackPanel
             {
                 Background = Theme.Brush(Colors.Black, 0.75), Padding = new Thickness(4, 1, 4, 1), Margin = new Thickness(4),
                 HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom,
-                Child = ClipPane.Plain(tag, 11, Brushes.White, Theme.Mono),
+                Child = ClipPane.Plain(tag, mono ? 11 : Theme.S(8.5), Brushes.White, family),
             });
         var frame = new Border
         {
@@ -735,7 +809,7 @@ sealed class ConsoleThumb : StackPanel
         };
         picture.Children.Add(frame);
         Children.Add(picture);
-        var when = ClipPane.Plain(ClipThumb.TimeAgo(item.Date), 11, selected ? p.TextBrush : p.MutedBrush, Theme.Mono);
+        var when = ClipPane.Plain(ClipThumb.TimeAgo(item.Date), mono ? 11 : Theme.S(8.5), selected ? p.TextBrush : p.MutedBrush, family);
         when.Margin = new Thickness(0, 5, 0, 0);
         Children.Add(when);
         Width = w;
@@ -873,7 +947,8 @@ sealed class ClipView : StackPanel
         return new Grid { Children = { stage, new Border { Width = w, Height = h, CornerRadius = new CornerRadius(r), BorderThickness = new Thickness(1), BorderBrush = Theme.Line, IsHitTestVisible = false } } };
     }
 
-    public ClipView(ClipItem item, double w, double h, bool autoplay, Action changed, PanePalette? palette = null)
+    public ClipView(ClipItem item, double w, double h, bool autoplay, Action changed, PanePalette? palette = null,
+                    PaneStyle style = PaneStyle.Standard)
     {
         Item = item;
         this.changed = changed;
@@ -935,7 +1010,7 @@ sealed class ClipView : StackPanel
         transport.Children.Add(timeline);
         Children.Add(transport);
 
-        saveAs = new SaveAsRow(w, p, UpdateConfirm) { Visibility = Visibility.Collapsed, Margin = new Thickness(0, Theme.S(8), 0, 0) };
+        saveAs = new SaveAsRow(w, p, UpdateConfirm, square: style != PaneStyle.Standard) { Visibility = Visibility.Collapsed, Margin = new Thickness(0, Theme.S(8), 0, 0) };
         Children.Add(saveAs);
 
         ticker.Tick += (_, _) => UpdateClock();
@@ -1050,7 +1125,11 @@ sealed class ClipView : StackPanel
         IsTrimming = true;
         timeline.BeginTrim();
         trimButtons!.Visibility = Visibility.Visible;
-        saveAs!.ShowChoices();
+        List<ClipSound> sounds;
+        try { sounds = ClipAudio.Sources(Mp4Reader.Open(Item.FilePath)); }
+        catch (Exception e) { Log.Error("clip sounds", e); sounds = new(); }
+        saveAs!.ShowSounds(sounds);
+        saveAs.ShowChoices();
         saveAs.Visibility = Visibility.Visible;
         UpdateConfirm();
         UpdateClock();
@@ -1075,6 +1154,9 @@ sealed class ClipView : StackPanel
         var s = Settings.Shared;
         var format = s.ExportFormat;
         int quality = s.ExportQuality;
+        int[]? audio = saveAs!.AudioChoice;
+        bool sound = audio is not { Length: 0 };
+        string with = audio is { Length: > 0 } ? " with " + saveAs.ChosenNames : sound ? "" : " without sound";
         CancelTrim();
         IsSaving = true;
         var source = Item.FilePath;
@@ -1090,10 +1172,10 @@ sealed class ClipView : StackPanel
         {
             if (format == ExportFormat.Original)
             {
-                var dest = ClipTrimmer.OutputPath(source);
-                double length = await ClipTrimmer.TrimAsync(source, start, end, dest);
+                var dest = ClipTrimmer.OutputPath(source, sound ? "trimmed" : "trimmed, no sound");
+                double length = await ClipTrimmer.TrimAsync(source, start, end, dest, audio);
                 ClipLibrary.Refresh();
-                Toast.Show("Trimmed clip saved", $"{Format.Duration(length)} · {Path.GetFileName(dest)}", Sym.Scissors, Theme.Accent,
+                Toast.Show("Trimmed clip saved" + with, $"{Format.Duration(length)} · {Path.GetFileName(dest)}", Sym.Scissors, Theme.Accent,
                     onClick: () => OverlayController.Show(dest));
                 Finish();
                 OverlayController.Show(dest);
@@ -1101,14 +1183,14 @@ sealed class ClipView : StackPanel
             else
             {
                 bool whole = start < 0.05 && end > duration - 0.05;
-                var dest = ClipConverter.OutputPath(source, format, whole);
+                var dest = ClipConverter.OutputPath(source, format, whole, sound);
                 var ui = Dispatcher;
                 await ClipConverter.ConvertAsync(source, start, end, format, quality, dest,
-                    pr => ui.BeginInvoke(() => saveAs?.ShowProgress(format, pr)));
+                    pr => ui.BeginInvoke(() => saveAs?.ShowProgress(format, pr)), audio);
                 ClipLibrary.Refresh();
                 long after = 0;
                 try { after = new FileInfo(dest).Length; } catch { }
-                Toast.Show($"Saved as {format.Label()}", $"{Controller.SizeText(after)} (was {Controller.SizeText(before)}) · {Path.GetFileName(dest)}",
+                Toast.Show($"Saved as {format.Label()}{with}", $"{Controller.SizeText(after)} (was {Controller.SizeText(before)}) · {Path.GetFileName(dest)}",
                     Sym.Sync, Theme.Accent, onClick: () => OverlayController.Show(dest));
                 Finish();
                 OverlayController.Show(dest);
@@ -1147,16 +1229,41 @@ sealed class SaveAsRow : StackPanel
     readonly Border bar, fill;
     readonly TextBlock progressText;
 
-    public SaveAsRow(double width, PanePalette palette, Action changed)
+    // Which of the clip's sounds go into the saved part. Each new trim starts with the clip's sound as it is.
+    readonly DockPanel soundRow = new() { LastChildFill = true, Margin = new Thickness(0, 0, 0, Theme.S(7)) };
+    readonly WrapPanel soundChips = new();
+    readonly TextBlock soundNote;
+    List<ClipSound> sounds = new();
+    readonly HashSet<int> soundsOn = new();
+    readonly bool square;
+
+    /// The tracks to save (see ClipAudio.Choose): null keeps the clip's sound as it is.
+    public int[]? AudioChoice => sounds.Count == 0 ? null : ClipAudio.Choose(sounds, soundsOn);
+    public string ChosenNames => string.Join(" + ", sounds.Where(x => soundsOn.Contains(x.Track)).Select(x => x.Name));
+
+    /// `square`: square corners, for the layouts whose panels are square (Console, Sidebar, Classic).
+    public SaveAsRow(double width, PanePalette palette, Action changed, bool square = false)
     {
         p = palette;
         this.changed = changed;
+        this.square = square;
         Width = width;
-        var label = Theme.Text("Save as", 10.5, FontWeights.SemiBold, p.MutedBrush);
-        label.VerticalAlignment = VerticalAlignment.Center;
+        var label = RowLabel("Save as");
         var first = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, Theme.S(6)) };
         first.Children.Add(label);
         first.Children.Add(formats);
+        formats.Margin = new Thickness(0, 0, Theme.S(12), 0);
+
+        var soundLabel = RowLabel("Sound");
+        soundLabel.VerticalAlignment = VerticalAlignment.Top;
+        soundLabel.Margin = new Thickness(0, Theme.S(5), 0, 0);
+        DockPanel.SetDock(soundLabel, Dock.Left);
+        soundRow.Children.Add(soundLabel);
+        soundNote = Theme.Text("", 9.5, brush: p.MutedBrush);
+        soundNote.VerticalAlignment = VerticalAlignment.Center;
+        soundNote.Margin = new Thickness(Theme.S(4), 0, 0, Theme.S(4));
+        soundRow.Children.Add(soundChips);
+        Children.Add(soundRow);
         choices.Children.Add(first);
         slider = new QualitySlider(p) { Width = Theme.S(140), Height = Theme.S(20), VerticalAlignment = VerticalAlignment.Center };
         slider.Changed += v => { s.ExportQuality = v; ShowWord(); };
@@ -1188,9 +1295,76 @@ sealed class SaveAsRow : StackPanel
         ShowChoices();
     }
 
+    /// "Sound" and "Save as" are as wide as each other, so the chips after them line up.
+    TextBlock RowLabel(string text)
+    {
+        var t = Theme.Text(text, 10.5, FontWeights.SemiBold, p.MutedBrush);
+        t.VerticalAlignment = VerticalAlignment.Center;
+        t.Width = Theme.S(52);
+        return t;
+    }
+
+    CornerRadius Round(double r) => new(square ? 0 : Theme.S(r));
+
+    /// A new trim: the clip's sounds, the ones in its own mix switched on.
+    public void ShowSounds(List<ClipSound> list)
+    {
+        sounds = list;
+        soundsOn.Clear();
+        foreach (var x in list) if (x.On) soundsOn.Add(x.Track);
+        ShowSoundChips();
+    }
+
+    void ShowSoundChips()
+    {
+        soundRow.Visibility = sounds.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        soundChips.Children.Clear();
+        foreach (var x in sounds)
+        {
+            bool on = soundsOn.Contains(x.Track);
+            var ink = on ? p.TextBrush : p.MutedBrush;
+            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            var icon = Icons.Make(x.IsMic ? (on ? Sym.Mic : Sym.MicOff) : (on ? Sym.Volume : Sym.Mute), Theme.S(10.5), on ? Theme.Brush(Theme.Accent) : p.MutedBrush);
+            icon.Margin = new Thickness(0, 0, Theme.S(5), 0);
+            row.Children.Add(icon);
+            var name = Theme.Text(x.Name, 10, FontWeights.SemiBold, ink);
+            name.VerticalAlignment = VerticalAlignment.Center;
+            name.MaxWidth = Theme.S(120);
+            name.TextTrimming = TextTrimming.CharacterEllipsis;
+            if (!on) name.TextDecorations = TextDecorations.Strikethrough;
+            row.Children.Add(name);
+            var chip = new Border
+            {
+                CornerRadius = Round(10), Padding = new Thickness(Theme.S(7), Theme.S(3), Theme.S(8), Theme.S(3)),
+                Margin = new Thickness(0, 0, Theme.S(4), Theme.S(4)), BorderThickness = new Thickness(1), Cursor = Cursors.Hand,
+                Background = on ? Theme.Brush(Theme.Accent, 0.22) : p.WashBrush(0.04),
+                BorderBrush = on ? Theme.Brush(Theme.Accent, 0.9) : p.LineBrush,
+                Child = row,
+                ToolTip = on ? $"Leave {x.Name} out of the saved clip" : $"Put {x.Name} in the saved clip",
+            };
+            var idle = chip.Background;
+            chip.MouseEnter += (_, _) => chip.Background = on ? Theme.Brush(Theme.Accent, 0.32) : p.WashBrush(0.1);
+            chip.MouseLeave += (_, _) => chip.Background = idle;
+            int track = x.Track;
+            chip.MouseLeftButtonDown += (_, e) => e.Handled = true;
+            chip.MouseLeftButtonUp += (_, e) =>
+            {
+                e.Handled = true;
+                if (!soundsOn.Remove(track)) soundsOn.Add(track);
+                ShowSoundChips();
+                changed();
+            };
+            soundChips.Children.Add(chip);
+        }
+        var choice = AudioChoice;
+        soundNote.Text = choice == null ? "as recorded" : choice.Length == 0 ? "no sound" : choice.Length == 1 ? "only this" : "mixed when saved";
+        soundChips.Children.Add(soundNote);
+    }
+
     public void ShowChoices()
     {
         choices.Visibility = note.Visibility = Visibility.Visible;
+        soundRow.Visibility = sounds.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         progress.Visibility = Visibility.Collapsed;
         formats.Children.Clear();
         foreach (var f in ClipConverter.Formats())
@@ -1198,7 +1372,7 @@ sealed class SaveAsRow : StackPanel
             bool on = s.ExportFormat == f;
             var pill = new Border
             {
-                CornerRadius = new CornerRadius(Theme.S(10)), Padding = new Thickness(Theme.S(7), Theme.S(2.5), Theme.S(7), Theme.S(2.5)),
+                CornerRadius = Round(10), Padding = new Thickness(Theme.S(7), Theme.S(2.5), Theme.S(7), Theme.S(2.5)),
                 Margin = new Thickness(0, 0, Theme.S(3), 0), BorderThickness = new Thickness(1), Cursor = Cursors.Hand,
                 Background = on ? Theme.Brush(Theme.Accent, 0.3) : p.WashBrush(0.08),
                 BorderBrush = on ? Theme.Brush(Theme.Accent) : Brushes.Transparent,
@@ -1220,14 +1394,14 @@ sealed class SaveAsRow : StackPanel
             ? "This PC's graphics card can't encode AV1, so converting will fail. " + ClipConverter.Av1Needs
             : convert
             ? "Drag the handles (or leave them at the ends for the whole clip), then click Convert. Re-encodes into a new file; the original is kept."
-            : "Drag the yellow handles, then click Trim. Saves without re-encoding; the original is kept.";
+            : "Drag the handles, then click Trim. Saves without re-encoding; the original is kept.";
     }
 
     void ShowWord() => word.Text = ClipConverter.Word(s.ExportQuality);
 
     public void ShowProgress(ExportFormat format, double fraction)
     {
-        choices.Visibility = note.Visibility = Visibility.Collapsed;
+        choices.Visibility = note.Visibility = soundRow.Visibility = Visibility.Collapsed;
         progress.Visibility = Visibility.Visible;
         double w = Math.Max(Width - Theme.S(200), Theme.S(60));
         bar.Width = w;
@@ -1283,7 +1457,7 @@ sealed class QualitySlider : FrameworkElement
     }
 }
 
-/// The preview's timeline: click or drag to seek; while trimming, two yellow handles mark the part to keep.
+/// The preview's timeline: click or drag to seek; while trimming, two handles mark the part to keep.
 sealed class TimelineBar : FrameworkElement
 {
     public event Action<double>? Seek;
@@ -1295,7 +1469,6 @@ sealed class TimelineBar : FrameworkElement
     bool trimming;
     enum Drag { None, Seek, Start, End }
     Drag drag;
-    static readonly Color Yellow = Color.FromRgb(255, 204, 0);
 
     readonly PanePalette p;
     public TimelineBar(PanePalette? palette = null) { p = palette ?? PanePalette.Overlay; Cursor = Cursors.Hand; }
@@ -1314,13 +1487,23 @@ sealed class TimelineBar : FrameworkElement
         dc.DrawRoundedRectangle(p.WashBrush(0.7), null, new Rect(0, mid - track / 2, X(position), track), track / 2, track / 2);
         if (trimming)
         {
-            double a = X(TrimStart), b = X(TrimEnd);
-            dc.DrawRectangle(Theme.Brush(Colors.Black, 0.55), null, new Rect(0, 0, a, h));
-            dc.DrawRectangle(Theme.Brush(Colors.Black, 0.55), null, new Rect(b, 0, Math.Max(w - b, 0), h));
-            var pen = new Pen(Theme.Brush(Yellow), Theme.S(2));
-            dc.DrawRectangle(null, pen, new Rect(a, 1, Math.Max(b - a, 1), h - 2));
+            // The part kept is a thicker bar in the accent color; the parts cut fade back. Each end has a handle
+            // with a grip, and a thin playhead shows where the preview is.
+            double a = X(TrimStart), b = X(TrimEnd), kept = Theme.S(6), hw = Theme.S(9);
+            var accent = Theme.Brush(Theme.Accent);
+            dc.DrawRoundedRectangle(p.WashBrush(0.08), null, new Rect(0, mid - track / 2, w, track), track / 2, track / 2);
+            dc.DrawRectangle(Theme.Brush(Theme.Accent, 0.85), null, new Rect(a, mid - kept / 2, Math.Max(b - a, 0), kept));
+            double px = X(Math.Clamp(position, TrimStart, TrimEnd));
+            dc.DrawRectangle(p.Dark ? Brushes.White : p.TextBrush, null, new Rect(px - Theme.S(1), mid - kept, Theme.S(2), kept * 2));
+            var grip = new Pen(Theme.Brush(Colors.Black, 0.45), Theme.S(1));
             foreach (var x in new[] { a, b })
-                dc.DrawRoundedRectangle(Theme.Brush(Yellow), null, new Rect(x - Theme.S(3), 0, Theme.S(6), h), Theme.S(2), Theme.S(2));
+            {
+                var r = new Rect(Math.Clamp(x - hw / 2, 0, Math.Max(w - hw, 0)), 0, hw, h);
+                dc.DrawRoundedRectangle(accent, new Pen(Theme.Brush(Colors.Black, 0.35), 1), r, Theme.S(3), Theme.S(3));
+                double cx = r.X + r.Width / 2;
+                for (int i = -1; i <= 1; i += 2)
+                    dc.DrawLine(grip, new Point(cx + i * Theme.S(1.5), mid - Theme.S(4)), new Point(cx + i * Theme.S(1.5), mid + Theme.S(4)));
+            }
         }
         else
         {

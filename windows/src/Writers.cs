@@ -39,8 +39,9 @@ static class ClipWriter
             var data = new byte[Math.Max(stop - first, 0)][];
             for (long i = first; i < stop; i++)
                 data[i - first] = byIndex.TryGetValue(i, out var d) ? d : AacEncoder.SilentFrame;
+            if (a.Name.Length > 0 && tracks.Count > 0 && !a.Packets.Any(p => p.Index >= first && p.Index < stop)) continue; // an app not heard in this part
             int track = mp4.AddAudio(Audio.Rate, Audio.Channels, Audio.Bitrate, Audio.AacConfig,
-                editMediaTime: (long)Math.Round(Math.Max(lead, 0)), delaySamples: (long)Math.Round(Math.Max(-lead, 0)));
+                editMediaTime: (long)Math.Round(Math.Max(lead, 0)), delaySamples: (long)Math.Round(Math.Max(-lead, 0)), name: a.Name);
             tracks.Add((track, lead, data));
         }
 
@@ -75,10 +76,12 @@ static class ClipWriter
 
     /// Which sources go into which output track. System sound always comes first, so players that only
     /// play the first track still play the game.
+    /// With the microphone mixed in, the microphone and the game sound are also kept apart, so the trimmer
+    /// can leave either out.
     public static AudioTrack[][] AudioTracks(IEnumerable<AudioTrack> present, bool mixMic)
     {
         var list = present.Distinct().OrderBy(t => (int)t).ToArray();
-        if (mixMic && list.Length > 1) return new[] { list };
+        if (mixMic && list.Length > 1) return new[] { list, new[] { AudioTrack.Mic }, new[] { AudioTrack.System } };
         return list.Select(t => new[] { t }).ToArray();
     }
 }
@@ -93,6 +96,7 @@ sealed class LiveRecorder
     readonly Thread thread;
     readonly TaskCompletionSource<double> result = new(TaskCreationOptions.RunContinuationsAsynchronously);
     readonly List<(AudioChunk chunk, AudioTrack track)> early = new();
+    readonly Dictionary<uint, (int Track, AudioPipeline Pipeline)> apps = new();
 
     Mp4Muxer? mp4;
     CodecConfig? config;
@@ -121,6 +125,11 @@ sealed class LiveRecorder
         if (!queue.IsAddingCompleted) try { queue.Add((chunk, track)); } catch (InvalidOperationException) { }
     }
 
+    public void AppendAppAudio(AudioChunk chunk, AppSound app)
+    {
+        if (!queue.IsAddingCompleted) try { queue.Add((chunk, app)); } catch (InvalidOperationException) { }
+    }
+
     public Task<double> FinishAsync()
     {
         queue.CompleteAdding();
@@ -140,11 +149,17 @@ sealed class LiveRecorder
                 {
                     lastPump = now;
                     audio.Pump(WriteAudio, now);
+                    foreach (var a in apps.Values) a.Pipeline.Pump((_, index, packet) => mp4!.Write(a.Track, packet, index * Audio.AacFrame, true), now);
                 }
             }
             if (failure != null) throw failure;
             if (mp4 == null) throw new RewindException("No video was captured.");
-            audio!.Finish(WriteAudio, lastPts + Clock.Second / Math.Max(config!.Fps, 1));
+            long endPts = lastPts + Clock.Second / Math.Max(config!.Fps, 1);
+            audio!.Finish(WriteAudio, endPts);
+            foreach (var a in apps.Values) a.Pipeline.Finish((_, index, packet) => mp4.Write(a.Track, packet, index * Audio.AacFrame, true), endPts);
+            if (apps.Count > 0)
+                for (int g = 0; g < groups.Length; g++)
+                    if (SoundNames.IsPlainCopy(groups, g)) mp4.Omit(audioTracks[g]);
             mp4.Finish();
             result.SetResult(Clock.Seconds(lastPts - start));
         }
@@ -156,6 +171,7 @@ sealed class LiveRecorder
         finally
         {
             audio?.Dispose();
+            foreach (var a in apps.Values) a.Pipeline.Dispose();
         }
     }
 
@@ -167,6 +183,7 @@ sealed class LiveRecorder
         {
             if (item is EncodedFrame f) HandleVideo(f);
             else if (item is ValueTuple<AudioChunk, AudioTrack> a) HandleAudio(a.Item1, a.Item2);
+            else if (item is ValueTuple<AudioChunk, AppSound> app) HandleApp(app.Item1, app.Item2);
         }
         catch (Exception e)
         {
@@ -188,7 +205,7 @@ sealed class LiveRecorder
             start = f.Pts;
             mp4 = new Mp4Muxer(Path, fastStart: false);
             videoTrack = mp4.AddVideo(config);
-            audioTracks = groups.Select(_ => mp4.AddAudio(Audio.Rate, Audio.Channels, Audio.Bitrate, Audio.AacConfig)).ToArray();
+            audioTracks = groups.Select(g => mp4.AddAudio(Audio.Rate, Audio.Channels, Audio.Bitrate, Audio.AacConfig, name: SoundNames.Of(g))).ToArray();
             audio = new AudioPipeline(groups, start);
             foreach (var (c, t) in early) audio.Add(c, t);
             early.Clear();
@@ -196,7 +213,24 @@ sealed class LiveRecorder
         if (!ReferenceEquals(f.Config, config)) return; // capture restarted mid-recording; can't splice
         mp4.Write(videoTrack, f.Data, Ticks.ToVideo(f.Pts - start), f.IsKey);
         lastPts = f.Pts;
-        audio!.NoteMedia(f.Pts + Clock.Second / Math.Max(config.Fps, 1));
+        long shown = f.Pts + Clock.Second / Math.Max(config.Fps, 1);
+        audio!.NoteMedia(shown);
+        foreach (var a in apps.Values) a.Pipeline.NoteMedia(shown);
+    }
+
+    /// An app gets its own track from when it's first heard; the track starts that far into the recording.
+    void HandleApp(AudioChunk c, AppSound app)
+    {
+        if (mp4 == null) return;
+        if (!apps.TryGetValue(app.Pid, out var t))
+        {
+            if (!AppSound.IsLoud(c) || apps.Count >= AppAudioWatcher.Most) return;
+            long origin = Math.Max(c.Pts, start);
+            int track = mp4.AddAudio(Audio.Rate, Audio.Channels, Audio.Bitrate, Audio.AacConfig,
+                                     delaySamples: Audio.FrameAt(origin, start), name: app.Name);
+            apps[app.Pid] = t = (track, new AudioPipeline(new[] { new[] { AudioTrack.System } }, origin));
+        }
+        t.Pipeline.Add(c, AudioTrack.System);
     }
 
     void HandleAudio(AudioChunk c, AudioTrack track)
