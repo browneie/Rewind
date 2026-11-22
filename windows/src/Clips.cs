@@ -17,6 +17,9 @@ sealed record ClipItem(string FilePath, DateTime Date)
     string Name => System.IO.Path.GetFileName(FilePath);
     public string? AppName => Cleanup.AppPrefix(Name);
 
+    /// The game the clip is from: noted when it was saved, or the app it's named after.
+    public string? Game => ClipTags.Get(FilePath, ClipTags.Game) ?? AppName;
+
     public Kinds Kind =>
         Name.StartsWith("Screenshot ") || System.IO.Path.GetExtension(Name).Equals(".png", StringComparison.OrdinalIgnoreCase) ? Kinds.Screenshot
         : Name.StartsWith("Recording ") ? Kinds.Recording
@@ -67,6 +70,19 @@ static class ClipLibrary
 {
     public const int Limit = 5;
     public static List<ClipItem> Items { get; private set; } = new();
+    /// The games clips were saved from, most recent first, and whether some clips aren't from any game.
+    public static List<string> Games { get; private set; } = new();
+    public static bool HasOther { get; private set; }
+    /// Which game's clips to show: null for all, `Other` for clips without a game.
+    public static string? GameFilter { get; private set; }
+    public const string Other = "\0other";
+
+    public static void Filter(string? game)
+    {
+        if (GameFilter == game) return;
+        GameFilter = game;
+        Refresh();
+    }
     public static readonly Dictionary<string, BitmapSource> Thumbs = new(StringComparer.OrdinalIgnoreCase);
     public static readonly Dictionary<string, double> Durations = new(StringComparer.OrdinalIgnoreCase);
     public static readonly Dictionary<string, (int W, int H)> Sizes = new(StringComparer.OrdinalIgnoreCase);
@@ -86,13 +102,22 @@ static class ClipLibrary
         var dir = Settings.Shared.OutputDirectory;
         var busy = Controller.Shared.Router.Recorder?.Path;
         var prefixes = Settings.Shared.AppPrefixes.ToList();
+        var filter = GameFilter;
         var ui = System.Windows.Application.Current.Dispatcher;
         int gen = ++generation;
         // Shell thumbnails want an STA thread.
         var t = new Thread(() =>
         {
-            var found = Recent(dir, busy, prefixes);
-            ui.BeginInvoke(() => { if (gen == generation) { Items = found; Changed?.Invoke(); } });
+            var (found, games, other) = Scan(dir, busy, prefixes, filter);
+            ui.BeginInvoke(() =>
+            {
+                if (gen != generation) return;
+                Items = found;
+                Games = games;
+                HasOther = other;
+                if (GameFilter is { } g && g != Other && !games.Contains(g)) { GameFilter = null; Refresh(); return; } // its last clip is gone
+                Changed?.Invoke();
+            });
             foreach (var item in found)
             {
                 if (gen != generation) return;
@@ -158,18 +183,32 @@ static class ClipLibrary
         return string.Join(" · ", parts);
     }
 
-    public static List<ClipItem> Recent(string dir, string? busy, IEnumerable<string> prefixes)
+    public static List<ClipItem> Recent(string dir, string? busy, IEnumerable<string> prefixes) => Scan(dir, busy, prefixes, null).Items;
+
+    /// The newest clips (of one game, with `game`), and every game the folder has clips of.
+    public static (List<ClipItem> Items, List<string> Games, bool HasOther) Scan(string dir, string? busy, IEnumerable<string> prefixes, string? game)
     {
-        if (!Directory.Exists(dir)) return new();
+        if (!Directory.Exists(dir)) return (new(), new(), false);
         var list = prefixes.ToList();
-        return Directory.EnumerateFiles(dir)
+        var all = Directory.EnumerateFiles(dir)
             .Select(p => new FileInfo(p))
-            .Where(f => (f.Attributes & FileAttributes.Hidden) == 0 && Cleanup.IsRewindFile(f.Name, list) &&
+            .Where(f => (f.Attributes & FileAttributes.Hidden) == 0 &&
+                        (Cleanup.IsRewindFile(f.Name, list) || ClipTags.Get(f.FullName, ClipTags.Kind) != null) &&
                         !string.Equals(f.FullName, busy, StringComparison.OrdinalIgnoreCase))
             .Select(f => new ClipItem(f.FullName, f.CreationTime))
             .OrderByDescending(c => c.Date)
-            .Take(Limit)
             .ToList();
+        var games = new List<string>();
+        bool other = false;
+        var gameOf = new Dictionary<ClipItem, string?>();
+        foreach (var c in all)
+        {
+            var g = gameOf[c] = c.Game;
+            if (g == null) other = true;
+            else if (!games.Contains(g)) games.Add(g);
+        }
+        var shown = game == null ? all : all.Where(c => game == Other ? gameOf[c] == null : gameOf[c] == game);
+        return (shown.Take(Limit).ToList(), games, other);
     }
 
     static (BitmapSource? thumb, double? duration, (int, int)? size) Load(ClipItem item)
@@ -394,6 +433,8 @@ sealed class ClipPane : StackPanel
     readonly TextBlock hint;
     readonly StackPanel info = new();
     readonly Panel thumbs;
+    /// The game filter's place, just above the thumbnails (see GameFilterRow).
+    readonly Border filterHost = new();
     // Thumbnails keep one size whatever the player size.
     readonly double gap = Theme.S(7), thumbW = Theme.S(88);
     ClipView? view;
@@ -431,11 +472,13 @@ sealed class ClipPane : StackPanel
                 Children.Add(header);
                 Children.Add(stageHost);
                 Children.Add(hint);
+                Children.Add(filterHost);
                 Children.Add(thumbs);
                 break;
             case PaneStyle.Console:
                 thumbs.Margin = new Thickness(0, 18, 0, 0);
                 Children.Add(stageHost);
+                Children.Add(filterHost);
                 Children.Add(thumbs);
                 break;
             case PaneStyle.Classic:
@@ -443,12 +486,14 @@ sealed class ClipPane : StackPanel
                 thumbs.Margin = new Thickness(0, Theme.S(12), 0, 0);
                 Children.Add(header);
                 Children.Add(stageHost);
+                Children.Add(filterHost);
                 Children.Add(thumbs);
                 break;
             case PaneStyle.Sidebar:
                 thumbs.Margin = new Thickness(0, 20, 0, 0);
                 Children.Add(stageHost);
                 Children.Add(info);
+                Children.Add(filterHost);
                 Children.Add(thumbs);
                 break;
         }
@@ -722,6 +767,38 @@ sealed class ClipPane : StackPanel
         info.Children.Add(links);
     }
 
+    /// "All · Roblox · Minecraft · Other": which game's clips the gallery shows. Only there once clips come from
+    /// more than one game (or a filter is on). In the horizontal galleries it sits above the thumbnails.
+    FrameworkElement? GameFilterRow()
+    {
+        var choices = new List<(string? Value, string Label)> { (null, "All") };
+        choices.AddRange(ClipLibrary.Games.Select(g => ((string?)g, g)));
+        if (ClipLibrary.HasOther) choices.Add((ClipLibrary.Other, "Other"));
+        if (choices.Count <= 2 && ClipLibrary.GameFilter == null) return null;
+        var row = new WrapPanel { Margin = new Thickness(0, Theme.S(10), 0, 0) };
+        bool square = style is PaneStyle.Console or PaneStyle.Classic or PaneStyle.Sidebar;
+        foreach (var (value, label) in choices)
+        {
+            bool on = ClipLibrary.GameFilter == value;
+            var chip = new Border
+            {
+                CornerRadius = new CornerRadius(square ? 0 : Theme.S(10)), Margin = new Thickness(0, 0, Theme.S(4), Theme.S(4)),
+                Padding = new Thickness(Theme.S(8), Theme.S(2.5), Theme.S(8), Theme.S(2.5)), BorderThickness = new Thickness(1),
+                Background = on ? Theme.Brush(Theme.Accent, 0.25) : p.WashBrush(0.06),
+                BorderBrush = on ? Theme.Brush(Theme.Accent, 0.9) : Brushes.Transparent,
+                Cursor = Cursors.Hand,
+                Child = Theme.Text(label, 10.5, FontWeights.SemiBold, on ? p.TextBrush : p.MutedBrush),
+                ToolTip = value == null ? "Clips from every game" : value == ClipLibrary.Other ? "Clips not from a game" : $"Only {label} clips",
+            };
+            var v = value;
+            chip.MouseLeftButtonDown += (_, e) => e.Handled = true;
+            chip.MouseLeftButtonUp += (_, e) => { e.Handled = true; ClipLibrary.Filter(v); };
+            row.Children.Add(chip);
+        }
+        row.Width = width;
+        return row;
+    }
+
     public static TextBlock Plain(string text, double size, Brush brush, FontFamily? family = null) => new()
     {
         Text = text, FontSize = size, Foreground = brush, FontFamily = family ?? Theme.Font,
@@ -731,6 +808,7 @@ sealed class ClipPane : StackPanel
     void RebuildThumbs()
     {
         thumbs.Children.Clear();
+        filterHost.Child = GameFilterRow();
         switch (style)
         {
             case PaneStyle.Console:
@@ -1174,6 +1252,7 @@ sealed class ClipView : StackPanel
             {
                 var dest = ClipTrimmer.OutputPath(source, sound ? "trimmed" : "trimmed, no sound");
                 double length = await ClipTrimmer.TrimAsync(source, start, end, dest, audio);
+                ClipTags.Copy(source, dest);
                 ClipLibrary.Refresh();
                 Toast.Show("Trimmed clip saved" + with, $"{Format.Duration(length)} · {Path.GetFileName(dest)}", Sym.Scissors, Theme.Accent,
                     onClick: () => OverlayController.Show(dest));
@@ -1187,6 +1266,7 @@ sealed class ClipView : StackPanel
                 var ui = Dispatcher;
                 await ClipConverter.ConvertAsync(source, start, end, format, quality, dest,
                     pr => ui.BeginInvoke(() => saveAs?.ShowProgress(format, pr)), audio);
+                ClipTags.Copy(source, dest);
                 ClipLibrary.Refresh();
                 long after = 0;
                 try { after = new FileInfo(dest).Length; } catch { }

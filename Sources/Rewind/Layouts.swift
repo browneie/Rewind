@@ -241,13 +241,16 @@ struct ConsoleLayout: View {
 
     private func strip(width: CGFloat) -> some View {
         let fits = max(1, Int((width + 2) / (thumb.width + 2)))
-        return HStack(alignment: .top, spacing: 2) {
-            ForEach(lib.items.prefix(fits)) { item in
-                ConsoleThumb(item: item, size: thumb, selected: item == preview.item)
+        return VStack(alignment: .leading, spacing: 8) {
+            GameFilter().environment(\.squareChrome, true)
+            HStack(alignment: .top, spacing: 2) {
+                ForEach(lib.items.prefix(fits)) { item in
+                    ConsoleThumb(item: item, size: thumb, selected: item == preview.item)
+                }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            .frame(height: thumb.height + 18, alignment: .top)
         }
-        .frame(height: thumb.height + 18, alignment: .top)
     }
 }
 
@@ -523,6 +526,7 @@ struct SidebarLayout: View {
     private func earlier(_ p: Palette, selected: ClipItem?) -> some View {
         let others = lib.items.filter { $0 != selected }.prefix(3)
         return VStack(alignment: .leading, spacing: 0) {
+            GameFilter().environment(\.squareChrome, true).padding(.bottom, 12)
             if !others.isEmpty {
                 Text("Earlier").font(.system(size: 12)).foregroundStyle(p.muted).padding(.bottom, 8)
                 ForEach(Array(others)) { SidebarClipRow(item: $0, p: p) }

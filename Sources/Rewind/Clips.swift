@@ -14,6 +14,9 @@ struct ClipItem: Identifiable, Hashable {
     /// "Roblox" for clips named after the captured app.
     var appName: String? { Cleanup.appPrefix(of: url.lastPathComponent) }
 
+    /// The game the clip is from: noted when it was saved, or the app it's named after.
+    var game: String? { ClipTags.get(url, .game) ?? appName }
+
     var kind: Kind {
         let name = url.lastPathComponent
         if name.hasPrefix("Screenshot ") || url.pathExtension.lowercased() == "png" { return .screenshot }
@@ -68,6 +71,12 @@ final class ClipLibrary: ObservableObject {
     @Published private(set) var sizes: [URL: CGSize] = [:]
     /// "H.264", "HEVC", "PNG"…
     @Published private(set) var codecs: [URL: String] = [:]
+    /// The games clips were saved from, most recent first, and whether some clips aren't from any game.
+    @Published private(set) var games: [String] = []
+    @Published private(set) var hasOther = false
+    /// Which game's clips to show: nil for all, `ClipLibrary.other` for clips without a game.
+    @Published var gameFilter: String? { didSet { if gameFilter != oldValue { refresh() } } }
+    nonisolated static let other = "\u{0}other"
     private var scan: Task<Void, Never>?
     private var loaded: [URL: Date] = [:] // file date the metadata was loaded for
 
@@ -77,33 +86,44 @@ final class ClipLibrary: ObservableObject {
         let dir = Settings.shared.outputDirectory
         let busy = Controller.shared.router.recorder?.url // still being written
         let prefixes = Settings.shared.appPrefixes
+        let filter = gameFilter
         scan?.cancel()
         scan = Task {
             let found = await Task.detached(priority: .userInitiated) {
-                ClipLibrary.recent(in: dir, excluding: busy, appPrefixes: prefixes)
+                ClipLibrary.recent(in: dir, excluding: busy, appPrefixes: prefixes, game: filter)
             }.value
             guard !Task.isCancelled else { return }
-            items = found
-            for item in found where loaded[item.url] != item.date {
+            items = found.items
+            games = found.games
+            hasOther = found.hasOther
+            if let filter, filter != Self.other, !found.games.contains(filter) { gameFilter = nil } // its last clip is gone
+            for item in found.items where loaded[item.url] != item.date {
                 await load(item)
                 guard !Task.isCancelled else { return }
             }
         }
     }
 
-    nonisolated static func recent(in dir: URL, excluding busy: URL?, appPrefixes: [String] = []) -> [ClipItem] {
+    /// The newest clips (of one game, with `game`), and every game the folder has clips of.
+    nonisolated static func recent(in dir: URL, excluding busy: URL?, appPrefixes: [String] = [],
+                                   game: String? = nil) -> (items: [ClipItem], games: [String], hasOther: Bool) {
         let keys: [URLResourceKey] = [.creationDateKey, .contentModificationDateKey, .isRegularFileKey]
         guard let files = try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { return [] }
+            at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { return ([], [], false) }
         let skip = busy?.standardizedFileURL
-        return files.compactMap { url -> ClipItem? in
+        let all = files.compactMap { url -> ClipItem? in
             guard Cleanup.isRewindFile(url.lastPathComponent, appPrefixes: appPrefixes), url.standardizedFileURL != skip,
                   let v = try? url.resourceValues(forKeys: Set(keys)), v.isRegularFile == true else { return nil }
             return ClipItem(url: url, date: v.creationDate ?? v.contentModificationDate ?? .distantPast)
         }
         .sorted { $0.date > $1.date }
-        .prefix(limit)
-        .map { $0 }
+        var games: [String] = []
+        var hasOther = false
+        for item in all {
+            if let g = item.game { if !games.contains(g) { games.append(g) } } else { hasOther = true }
+        }
+        let shown = game.map { g in all.filter { g == other ? $0.game == nil : $0.game == g } } ?? all
+        return (Array(shown.prefix(limit)), games, hasOther)
     }
 
     private func load(_ item: ClipItem) async {
@@ -322,6 +342,7 @@ final class ClipPreview: ObservableObject {
                 } else {
                     try await ClipTrimmer.trim(source.url, range: range, to: dest)
                 }
+                ClipTags.copy(from: source.url, to: dest)
                 isSavingTrim = false
                 ClipLibrary.shared.refresh()
                 if self.item == source { open(url: dest) }
@@ -382,6 +403,7 @@ extension ClipPreview {
                     }
                 }
                 if let sound { try await Self.withSound(sound, names: names, of: source.url, run) } else { try await run(source.url) }
+                ClipTags.copy(from: source.url, to: dest)
                 isSavingTrim = false
                 convertProgress = nil
                 ClipLibrary.shared.refresh()
@@ -488,6 +510,7 @@ struct ClipPane: View {
                 }
             }
 
+            GameFilter().frame(width: width, alignment: .leading)
             if !lib.items.isEmpty {
                 let fits = max(1, Int((width + gap) / (thumbW + gap)))
                 HStack(spacing: gap) {
@@ -742,5 +765,37 @@ struct FlowLayout: Layout {
             rows[rows.count - 1].height = max(rows[rows.count - 1].height, size.height)
         }
         return rows
+    }
+}
+
+/// "All · Roblox · Minecraft · Other": which game's clips the gallery shows. Only there once clips come from
+/// more than one game (or a filter is on).
+struct GameFilter: View {
+    @ObservedObject private var lib = ClipLibrary.shared
+    @Environment(\.squareChrome) private var square
+
+    var body: some View {
+        let choices: [(String?, String)] = [(nil, "All")] + lib.games.map { ($0, $0) } + (lib.hasOther ? [(ClipLibrary.other, "Other")] : [])
+        if choices.count > 2 || lib.gameFilter != nil {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(choices, id: \.1) { value, label in chip(label, value) }
+                }
+            }
+        }
+    }
+
+    private func chip(_ label: String, _ value: String?) -> some View {
+        let on = lib.gameFilter == value
+        return Button { lib.gameFilter = value } label: {
+            Text(label).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                .foregroundStyle(on ? Color.primary : Color.secondary)
+                .padding(.horizontal, 9).padding(.vertical, 3.5)
+                .background(RoundedRectangle(cornerRadius: square ? 0 : 10).fill(on ? Theme.accent.opacity(0.25) : Color.primary.opacity(0.06)))
+                .overlay(RoundedRectangle(cornerRadius: square ? 0 : 10).strokeBorder(on ? Theme.accent.opacity(0.9) : .clear))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(value == nil ? "Clips from every game" : value == ClipLibrary.other ? "Clips not from a game" : "Only \(label) clips")
     }
 }

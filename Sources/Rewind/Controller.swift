@@ -12,6 +12,8 @@ final class Controller: ObservableObject {
     @Published private(set) var recording = false
     @Published private(set) var recordingStart: Date?
     @Published private(set) var isCapturing = false
+    /// The game a recording in progress is from (ClipTags).
+    private var recordingGame: String?
     @Published private(set) var captureInfo = ""
     /// Replays and recordings still being written or mixed (the uninstaller waits for these).
     private(set) var savesInFlight = 0
@@ -108,6 +110,7 @@ final class Controller: ObservableObject {
         }
         guard let url = makeOutputURL(prefix: namePrefix("Replay"), ext: "mp4") else { return }
         let mix = settings.mixMicrophone
+        let game = currentGame()
         savesInFlight += 1
         ClipWriter.write(snap, to: url) { result in
             Task { @MainActor in
@@ -115,6 +118,7 @@ final class Controller: ObservableObject {
                 switch result {
                 case .success(let length):
                     await Controller.mixDown(url, enabled: mix)
+                    ClipTags.set(url, .game, game)
                     ClipLibrary.shared.refreshIfShown()
                     Toast.show("Replay saved", "\(formatDuration(length)) · \(url.lastPathComponent)",
                                icon: "checkmark.circle.fill", tint: Theme.accent, duration: 5,
@@ -136,6 +140,7 @@ final class Controller: ObservableObject {
         let engine = self.engine
         rec.requestKeyframe = { engine.forceKeyframe() }
         router.recorder = rec
+        recordingGame = currentGame()
         recording = true
         recordingStart = Date()
         engine.forceKeyframe()
@@ -154,6 +159,7 @@ final class Controller: ObservableObject {
         recording = false
         recordingStart = nil
         let mix = settings.mixMicrophone
+        let game = recordingGame
         savesInFlight += 1
         rec.finish { result in
             Task { @MainActor in
@@ -161,6 +167,7 @@ final class Controller: ObservableObject {
                 switch result {
                 case .success(let length):
                     await Controller.mixDown(rec.url, enabled: mix)
+                    ClipTags.set(rec.url, .game, game)
                     ClipLibrary.shared.refreshIfShown()
                     Toast.show("Recording saved", "\(formatDuration(length)) · \(rec.url.lastPathComponent)",
                                icon: "checkmark.circle.fill", tint: Theme.accent, duration: 5,
@@ -189,9 +196,11 @@ final class Controller: ObservableObject {
     func screenshot() {
         guard let url = makeOutputURL(prefix: namePrefix("Screenshot"), ext: "png") else { return }
         let displayID = settings.displayID, cursor = settings.showCursor, appID = settings.captureAppID
+        let game = currentGame()
         Task {
             do {
                 try await CaptureEngine.screenshot(displayID: displayID, appID: appID, showCursor: cursor, to: url)
+                ClipTags.set(url, .game, game)
                 ClipLibrary.shared.refreshIfShown()
                 Toast.show("Screenshot saved", url.lastPathComponent, icon: "camera.fill", tint: Theme.screenshot,
                            button: ("Copy", { ClipSharer.shared.copy(url) })) { OverlayController.shared.show(preview: url) }
@@ -357,6 +366,16 @@ final class Controller: ObservableObject {
     }
 
     /// "Roblox" while capturing just that app, otherwise the usual "Replay" / "Recording" / "Screenshot".
+    /// The game a clip being saved now is from: the captured app, or with a whole display captured, the app
+    /// in front (you're playing it; the overlay never takes that over). Nil for Finder and the like.
+    private func currentGame() -> String? {
+        if let app = engine.capturedApp { return app }
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              front.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+              !["com.apple.finder", "com.apple.dock", "com.apple.loginwindow"].contains(front.bundleIdentifier ?? "") else { return nil }
+        return front.localizedName
+    }
+
     private func namePrefix(_ fallback: String) -> String {
         let app: String?
         if isCapturing {

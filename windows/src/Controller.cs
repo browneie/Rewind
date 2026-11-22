@@ -142,10 +142,12 @@ sealed class Controller
             return;
         }
         if (MakeOutputPath(NamePrefix("Replay"), "mp4") is not { } path) return;
+        var game = CurrentGame();
         SavesInFlight++;
         try
         {
             double length = await ClipWriter.WriteAsync(snap, path);
+            ClipTags.Set(path, ClipTags.Game, game);
             ClipLibrary.RefreshIfShown();
             Toast.Show("Replay saved", $"{Format.Duration(length)} · {Path.GetFileName(path)}", Sym.Check, Theme.Accent, duration: 5,
                 onClick: () => OverlayController.Show(path), button: ("Copy", () => ClipSharer.Copy(path)));
@@ -168,6 +170,7 @@ sealed class Controller
         Router.Recorder = rec;
         Recording = true;
         RecordingStart = DateTime.Now;
+        recordingGame = CurrentGame();
         Changed();
         engine.ForceKeyframe();
         Reconcile(ok =>
@@ -186,16 +189,17 @@ sealed class Controller
         Recording = false;
         RecordingStart = null;
         Changed();
-        finishing = Finish(rec);
+        finishing = Finish(rec, recordingGame);
         Reconcile();
         return finishing;
 
-        async Task Finish(LiveRecorder rec)
+        async Task Finish(LiveRecorder rec, string? game)
         {
             SavesInFlight++;
             try
             {
                 double length = await rec.FinishAsync();
+                ClipTags.Set(rec.Path, ClipTags.Game, game);
                 ClipLibrary.RefreshIfShown();
                 Toast.Show("Recording saved", $"{Format.Duration(length)} · {Path.GetFileName(rec.Path)}", Sym.Check, Theme.Accent, duration: 5,
                     onClick: () => OverlayController.Show(rec.Path), button: ("Copy", () => ClipSharer.Copy(rec.Path)));
@@ -212,6 +216,7 @@ sealed class Controller
     public async void Screenshot()
     {
         if (MakeOutputPath(NamePrefix("Screenshot"), "png") is not { } path) return;
+        var game = CurrentGame();
         try
         {
             // While capturing, the screenshot is the newest frame from before the overlay opened. Otherwise a
@@ -222,6 +227,7 @@ sealed class Controller
                 await Task.Delay(300);
             }
             await engine.ScreenshotAsync(settings.DisplayId, settings.CaptureAppId, settings.ShowCursor, path);
+            ClipTags.Set(path, ClipTags.Game, game);
             ClipLibrary.RefreshIfShown();
             Toast.Show("Screenshot saved", Path.GetFileName(path), Sym.Camera, Theme.Screenshot, onClick: () => OverlayController.Show(path),
                 button: ("Copy", () => ClipSharer.Copy(path)));
@@ -296,11 +302,35 @@ sealed class Controller
     }
 
     bool overlayVisible;
+    /// The game in front when the overlay opened (the overlay itself is in front while it's open).
+    string? gameUnderOverlay;
+    /// The game a recording in progress is from (ClipTags).
+    string? recordingGame;
+
+    /// The game a clip being saved now is from: the captured app, or with a whole display captured, the app in
+    /// front (or the one that was, before the overlay opened). Null for Explorer and the like.
+    string? CurrentGame() => engine.CapturedApp ?? ForegroundGame() ?? (overlayVisible ? gameUnderOverlay : null);
+
+    static string? ForegroundGame()
+    {
+        try
+        {
+            Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out uint pid);
+            if (pid == 0 || pid == Environment.ProcessId) return null;
+            using var p = Process.GetProcessById((int)pid);
+            if (p.ProcessName is "explorer" or "ShellExperienceHost" or "StartMenuExperienceHost" or "SearchHost" or "LockApp") return null;
+            string? name = null;
+            try { name = p.MainModule?.FileVersionInfo.FileDescription; } catch { }
+            return string.IsNullOrWhiteSpace(name) ? p.ProcessName : name.Trim();
+        }
+        catch { return null; }
+    }
 
     /// The overlay opened or closed. A whole-display capture would record it too, so the video holds while it's
     /// open (capturing one app's window never includes it).
     public void OverlayChanged(bool visible)
     {
+        if (visible && !overlayVisible) gameUnderOverlay = ForegroundGame();
         overlayVisible = visible;
         UpdatePause();
     }

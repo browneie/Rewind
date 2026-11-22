@@ -106,6 +106,7 @@ enum SelfTest {
         if !testConvert(recURL) { failed = true }
         if !testShare(recURL) { failed = true }
         if !testCleanup(dir: dir) { failed = true }
+        if !testGames(dir: dir) { failed = true }
         return failed ? 1 : 0
     }
 
@@ -197,6 +198,33 @@ enum SelfTest {
     }
 
     /// Only Rewind's own files older than the limit go; everything else stays.
+    /// Game grouping: clips tagged with a game (or named after an app) are listed under it, the rest under Other.
+    private static func testGames(dir: URL) -> Bool {
+        let fm = FileManager.default
+        let d = dir.appendingPathComponent("games-test")
+        try? fm.removeItem(at: d)
+        try? fm.createDirectory(at: d, withIntermediateDirectories: true)
+        let files: [(String, String?)] = [
+            ("Replay 2026-01-03 at 10.00.00.mp4", "Minecraft"),
+            ("Roblox 2026-01-02 at 10.00.00.mp4", nil), // named after the app
+            ("Replay 2026-01-01 at 10.00.00.mp4", nil),
+        ]
+        for (i, (name, game)) in files.enumerated() {
+            let url = d.appendingPathComponent(name)
+            fm.createFile(atPath: url.path, contents: Data([0]))
+            try? fm.setAttributes([.creationDate: Date().addingTimeInterval(-Double(i) * 60)], ofItemAtPath: url.path)
+            ClipTags.set(url, .game, game)
+        }
+        let all = ClipLibrary.recent(in: d, excluding: nil, appPrefixes: ["Roblox"])
+        let roblox = ClipLibrary.recent(in: d, excluding: nil, appPrefixes: ["Roblox"], game: "Roblox").items.map(\.url.lastPathComponent)
+        let other = ClipLibrary.recent(in: d, excluding: nil, appPrefixes: ["Roblox"], game: ClipLibrary.other).items.map(\.url.lastPathComponent)
+        print("games: \(all.games) other: \(all.hasOther); Roblox → \(roblox); Other → \(other)")
+        try? fm.removeItem(at: d)
+        let ok = all.games == ["Minecraft", "Roblox"] && all.hasOther && roblox == [files[1].0] && other == [files[2].0]
+        if !ok { print("FAIL games") }
+        return ok
+    }
+
     private static func testCleanup(dir: URL) -> Bool {
         let fm = FileManager.default
         let d = dir.appendingPathComponent("cleanup-test")
