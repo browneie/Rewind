@@ -91,8 +91,10 @@ static class ClipStorage
 
     /// Re-encodes one clip to HEVC ("smaller file") beside it, and if that's under `worthIt` of its size, puts the
     /// original in the Recycle Bin and the new file in its place (same name, dates and game). Returns the bytes saved.
-    public static long ShrinkOne(string path, double worthIt = 0.8)
+    /// `recycle` sends the original to the Recycle Bin (replaced in the self-test).
+    public static long ShrinkOne(string path, double worthIt = 0.8, Func<string, bool>? recycle = null)
     {
+        recycle ??= Cleanup.Recycle;
         var dir = System.IO.Path.GetDirectoryName(path)!;
         var tmp = System.IO.Path.Combine(dir, $".shrinking-{Guid.NewGuid():N}{System.IO.Path.GetExtension(path)}");
         try
@@ -109,7 +111,7 @@ static class ClipStorage
             DateTime created = File.GetCreationTime(path), written = File.GetLastWriteTime(path);
             ClipTags.Set(tmp, ClipTags.Game, ClipTags.Get(path, ClipTags.Game));
             ClipTags.Set(tmp, ClipTags.Shrunk, "hevc");
-            if (!Cleanup.Recycle(path)) throw new RewindException("Couldn't move the original to the Recycle Bin, so it was left as it was.");
+            if (!recycle(path)) throw new RewindException("Couldn't move the original to the Recycle Bin, so it was left as it was.");
             try { File.Move(tmp, path); }
             catch
             {

@@ -13,6 +13,8 @@ static class SelfTest
         bool ok = RunCodec(dir, VideoCodec.H264, 1280, 720, 60, seconds: 5, full: true);
         ok &= RunCodec(dir, VideoCodec.Hevc, 1920, 1080, 60, seconds: 4, full: false);
         ok &= TestCleanup(dir);
+        ok &= TestGames(dir);
+        ok &= TestRename(dir);
         Console.WriteLine(ok ? "selftest passed" : "selftest FAILED");
         return ok ? 0 : 1;
     }
@@ -136,7 +138,101 @@ static class SelfTest
             ok &= TestTrim(recSep, audioTracks: 2);
             ok &= TestConvert(recSep, audioTracks: 2);
             ok &= TestShare(recSep, audioTracks: 2);
+            ok &= TestShrink(recMix);
         }
+        return ok;
+    }
+
+    /// Free up space: an old clip is listed, then shrunk to HEVC in place (same name, its sound tracks and game
+    /// kept, the original "in the Recycle Bin"), and not listed again.
+    static bool TestShrink(string source)
+    {
+        var d = Path.Combine(Path.GetDirectoryName(source)!, "shrink-test");
+        if (Directory.Exists(d)) Directory.Delete(d, true);
+        var trash = Path.Combine(d, "trash");
+        Directory.CreateDirectory(trash);
+        var path = Path.Combine(d, "Replay 2026-01-01 at 10.00.00.mp4");
+        File.Copy(source, path);
+        var old = DateTime.Now.AddDays(-30);
+        File.SetCreationTime(path, old);
+        File.SetLastWriteTime(path, old);
+        ClipTags.Set(path, ClipTags.Game, "Minecraft");
+        var names = Mp4Reader.Open(path).AudioTracks.Select(t => t.Name).ToList();
+        var before = ClipStorage.Scan(d, new(), null, DateTime.Now);
+        bool ok = true;
+        try
+        {
+            // The synthetic clip barely shrinks, so any new file counts here: this checks the swap.
+            long saved = ClipStorage.ShrinkOne(path, worthIt: 100, recycle: p => { File.Move(p, Path.Combine(trash, Path.GetFileName(p))); return true; });
+            var after = ClipStorage.Scan(d, new(), null, DateTime.Now);
+            bool inTrash = File.Exists(Path.Combine(trash, Path.GetFileName(path)));
+            var r = Mp4Reader.Open(path);
+            var nowNames = r.AudioTracks.Select(t => t.Name).ToList();
+            Console.WriteLine($"shrink: {before.Candidates.Count} candidate, saved {saved / 1024} KB, now {r.Video?.Codec}, original in the bin: {inTrash}, " +
+                              $"game {ClipTags.Get(path, ClipTags.Game) ?? "none"}, sounds [{string.Join(", ", nowNames)}], candidates after: {after.Candidates.Count}");
+            ok = before.Candidates.Count == 1 && after.Candidates.Count == 0 && inTrash && r.Video?.Codec == VideoCodec.Hevc &&
+                 ClipTags.Get(path, ClipTags.Game) == "Minecraft" && nowNames.SequenceEqual(names) && names.Count == 4 &&
+                 Math.Abs(File.GetCreationTime(path).Subtract(old).TotalSeconds) < 2;
+            ok &= Inspect(path, audioTracks: 4, minSeconds: r.Video!.PresentedDuration - 0.2);
+        }
+        catch (Exception e) { Console.WriteLine($"FAIL shrink: {e}"); ok = false; }
+        if (!ok) Console.WriteLine("FAIL shrink");
+        Directory.Delete(d, true);
+        return ok;
+    }
+
+    /// Game grouping: clips tagged with a game (or named after an app) are listed under it, the rest under Other.
+    static bool TestGames(string dir)
+    {
+        var d = Path.Combine(dir, "games-test");
+        if (Directory.Exists(d)) Directory.Delete(d, true);
+        Directory.CreateDirectory(d);
+        var files = new (string Name, string? Game)[]
+        {
+            ("Replay 2026-01-03 at 10.00.00.mp4", "Minecraft"),
+            ("Roblox 2026-01-02 at 10.00.00.mp4", null), // named after the app
+            ("Replay 2026-01-01 at 10.00.00.mp4", null),
+        };
+        for (int i = 0; i < files.Length; i++)
+        {
+            var path = Path.Combine(d, files[i].Name);
+            File.WriteAllBytes(path, new byte[] { 0 });
+            File.SetCreationTime(path, DateTime.Now.AddMinutes(-i));
+            ClipTags.Set(path, ClipTags.Game, files[i].Game);
+        }
+        var prefixes = new[] { "Roblox" };
+        var all = ClipLibrary.Scan(d, null, prefixes, null);
+        var roblox = ClipLibrary.Scan(d, null, prefixes, "Roblox").Items.Select(c => Path.GetFileName(c.FilePath)).ToList();
+        var other = ClipLibrary.Scan(d, null, prefixes, ClipLibrary.Other).Items.Select(c => Path.GetFileName(c.FilePath)).ToList();
+        Console.WriteLine($"games: [{string.Join(", ", all.Games)}] other: {all.HasOther}; Roblox → [{string.Join(", ", roblox)}]; Other → [{string.Join(", ", other)}]");
+        Directory.Delete(d, true);
+        bool ok = all.Games.SequenceEqual(new[] { "Minecraft", "Roblox" }) && all.HasOther && roblox.SequenceEqual(new[] { files[1].Name }) &&
+                  other.SequenceEqual(new[] { files[2].Name });
+        if (!ok) Console.WriteLine("FAIL games");
+        return ok;
+    }
+
+    /// A renamed clip is still listed as a Rewind replay of its game, shows its new name, and cleanup keeps it.
+    static bool TestRename(string dir)
+    {
+        var d = Path.Combine(dir, "rename-test");
+        if (Directory.Exists(d)) Directory.Delete(d, true);
+        Directory.CreateDirectory(d);
+        var path = Path.Combine(d, "Replay 2026-01-01 at 10.00.00.mp4");
+        File.WriteAllBytes(path, new byte[] { 0 });
+        ClipTags.Set(path, ClipTags.Game, "Minecraft");
+        string? renamed = null;
+        try { renamed = ClipLibrary.RenameFile(new ClipItem(path, DateTime.Now), "insane: clutch"); }
+        catch (Exception e) { Console.WriteLine($"FAIL rename: {e.Message}"); }
+        var listed = ClipLibrary.Scan(d, null, Array.Empty<string>(), null).Items.FirstOrDefault();
+        var removed = Cleanup.Run(d, 0, DateTime.Now.AddDays(30), remove: p => { File.Delete(p); return true; }).Count;
+        Console.WriteLine($"renamed → {(renamed == null ? "null" : Path.GetFileName(renamed))}: {listed?.Title ?? "not listed"}, {listed?.Kind}, " +
+                          $"game {listed?.Game ?? "none"}, cleanup removed {removed}");
+        // (a renamed clip's name and game live on the file, so they're checked before it's removed)
+        bool ok = Path.GetFileName(renamed) == "insane- clutch.mp4" && listed?.Title == "insane- clutch" && listed?.Kind == ClipItem.Kinds.Replay &&
+                  listed?.Game == "Minecraft" && removed == 0;
+        Directory.Delete(d, true);
+        if (!ok) Console.WriteLine("FAIL rename");
         return ok;
     }
 

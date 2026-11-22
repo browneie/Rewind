@@ -440,6 +440,8 @@ sealed class SettingsContent : StackPanel
                     "They keep their names and sound tracks. The originals go to the Recycle Bin, so you can get them back until you empty it. Renamed clips are left alone.";
                 storageFooter.Text = n == 0 && ClipStorage.Measured ? "Nothing older than a week left to shrink." : "";
             }
+            // An empty footer would still leave a blank line under the section.
+            storageFooter.Visibility = storageFooter.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         }
         free.Click += (_, _) =>
         {

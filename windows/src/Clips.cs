@@ -85,6 +85,24 @@ static class ClipLibrary
     /// which only looks for Rewind's own names, leaves it alone. Returns the new path. Stop playing it first.
     public static string? Rename(ClipItem item, string name)
     {
+        try
+        {
+            var dest = RenameFile(item, name);
+            if (dest != null) Refresh();
+            return dest;
+        }
+        catch (Exception e)
+        {
+            Log.Error("rename", e);
+            Toast.Error("Couldn't rename the clip", e);
+            return null;
+        }
+    }
+
+    /// The rename itself (the self-test calls it directly): null if the name is empty or unchanged, throws if
+    /// the file can't be moved.
+    public static string? RenameFile(ClipItem item, string name)
+    {
         var clean = string.Join("-", name.Trim().Split(System.IO.Path.GetInvalidFileNameChars())).Trim().TrimEnd('.');
         var dir = System.IO.Path.GetDirectoryName(item.FilePath)!;
         var ext = System.IO.Path.GetExtension(item.FilePath);
@@ -93,17 +111,15 @@ static class ClipLibrary
         for (int n = 2; File.Exists(dest); n++) dest = System.IO.Path.Combine(dir, $"{clean} {n}{ext}");
         // Noted before the move, so the file carries them: a new name can't say what kind of clip it is.
         var game = item.Game;
+        bool wasRenamed = item.IsRenamed;
         ClipTags.Set(item.FilePath, ClipTags.Kind, item.Kind.ToString().ToLowerInvariant());
         if (game != null) ClipTags.Set(item.FilePath, ClipTags.Game, game);
         try { File.Move(item.FilePath, dest); }
-        catch (Exception e)
+        catch
         {
-            ClipTags.Set(item.FilePath, ClipTags.Kind, null);
-            Log.Error("rename", e);
-            Toast.Error("Couldn't rename the clip", e);
-            return null;
+            if (!wasRenamed) ClipTags.Set(item.FilePath, ClipTags.Kind, null); // still under its Rewind name
+            throw;
         }
-        Refresh();
         return dest;
     }
 
@@ -172,7 +188,7 @@ static class ClipLibrary
     /// For --render-ui: loads a folder's clips right away instead of in the background.
     public static void LoadNow(string dir)
     {
-        Items = Recent(dir, null, Settings.Shared.AppPrefixes);
+        (Items, Games, HasOther) = Scan(dir, null, Settings.Shared.AppPrefixes, null);
         foreach (var item in Items)
         {
             var (thumb, duration, size) = Load(item);

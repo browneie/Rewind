@@ -311,17 +311,19 @@ sealed class Controller
     /// front (or the one that was, before the overlay opened). Null for Explorer and the like.
     string? CurrentGame() => engine.CapturedApp ?? ForegroundGame() ?? (overlayVisible ? gameUnderOverlay : null);
 
+    /// Named the way the app list names it (AppTarget.DisplayName), so a game's clips group together whether its
+    /// window or the whole display was captured; Minecraft (javaw.exe) is named from its window, not "Java(TM)…".
     static string? ForegroundGame()
     {
         try
         {
-            Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out uint pid);
-            if (pid == 0 || pid == Environment.ProcessId) return null;
-            using var p = Process.GetProcessById((int)pid);
-            if (p.ProcessName is "explorer" or "ShellExperienceHost" or "StartMenuExperienceHost" or "SearchHost" or "LockApp") return null;
-            string? name = null;
-            try { name = p.MainModule?.FileVersionInfo.FileDescription; } catch { }
-            return string.IsNullOrWhiteSpace(name) ? p.ProcessName : name.Trim();
+            var hwnd = Native.GetForegroundWindow();
+            Native.GetWindowThreadProcessId(hwnd, out uint pid);
+            if (pid == 0 || pid == Environment.ProcessId || Native.ProcessPath(pid) is not { } path) return null;
+            if (AppTarget.Key(path) is "explorer.exe" or "shellexperiencehost.exe" or "startmenuexperiencehost.exe" or "searchhost.exe"
+                or "lockapp.exe" or "applicationframehost.exe" or "textinputhost.exe") return null;
+            var name = AppTarget.DisplayName(path, Native.WindowTitle(hwnd)).Trim();
+            return name.Length > 0 ? name : null;
         }
         catch { return null; }
     }
